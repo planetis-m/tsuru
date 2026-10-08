@@ -3,6 +3,7 @@
 import argparse
 import base64
 import hashlib
+import json
 from pathlib import Path
 import socket
 import ssl
@@ -89,7 +90,7 @@ def fixture(sock, mode, wire=None, code=1002):
     if mode == "handshake-timeout":
         time.sleep(0.5)
         return
-    if mode == "echo":
+    if mode in ("echo", "large"):
         echo(sock)
         return
     if mode == "drop":
@@ -124,7 +125,11 @@ def fixture(sock, mode, wire=None, code=1002):
         sock.sendall(frame(8, data))
         assert sock.recv(1) == b""
         return
-    if mode in ("close-handshake", "close-inflight", "close-abort",
+    if mode == "close-abort":
+        handshake(sock)
+        assert sock.recv(1) == b""
+        return
+    if mode in ("close-handshake",
                 "close-timeout", "close-eof", "close-protocol-error"):
         handshake(sock)
         assert read_frame(sock) == (8, struct.pack("!H", 1000) + b"done")
@@ -132,14 +137,6 @@ def fixture(sock, mode, wire=None, code=1002):
             sock.sendall(frame(1, b"ignored") + frame(9, b"probe"))
             assert read_frame(sock) == (10, b"probe")
             sock.sendall(frame(8, struct.pack("!H", 1001) + b"bye"))
-        elif mode == "close-inflight":
-            sock.sendall(frame(1, b"\xc3", False) + frame(9, b"probe"))
-            assert read_frame(sock) == (10, b"probe")
-            sock.sendall(frame(0, b"\xa9!") + frame(2, b"\0\xff")
-                         + frame(8, struct.pack("!H", 1001) + b"bye"))
-        elif mode == "close-abort":
-            assert sock.recv(1) == b""
-            return
         elif mode == "close-protocol-error":
             sock.sendall(b"\x81\x80")
         elif mode == "close-eof":
@@ -148,7 +145,105 @@ def fixture(sock, mode, wire=None, code=1002):
             time.sleep(0.7)
         assert sock.recv(1) == b"", "close must release without sending a second close frame"
         return
-    if mode in ("read-timeout", "write-timeout"):
+    if mode == "read-timeout":
+        handshake(sock)
+        time.sleep(0.15)
+        assert read_frame(sock) == (1, b"after timeout")
+        sock.sendall(frame(1, b"ready"))
+        op, data = read_frame(sock)
+        assert op == 8
+        sock.sendall(frame(8, data))
+        assert sock.recv(1) == b""
+        return
+    if mode == "buffered-timeout":
+        handshake(sock, suffix=frame(1, b"buffered"))
+        op, data = read_frame(sock)
+        assert op == 8
+        sock.sendall(frame(8, data))
+        assert sock.recv(1) == b""
+        return
+    if mode == "partial-timeout":
+        handshake(sock, suffix=frame(1, b"\xc3", False) + frame(9, b"probe"))
+        assert read_frame(sock) == (10, b"probe")
+        tail = frame(0, b"\xa9!")
+        sock.sendall(tail[:-1])
+        time.sleep(0.15)
+        assert read_frame(sock) == (1, b"after timeout")
+        sock.sendall(tail[-1:] + frame(8, struct.pack("!H", 1001) + b"bye"))
+        assert read_frame(sock) == (8, struct.pack("!H", 1001) + b"bye")
+        assert sock.recv(1) == b""
+        return
+    if mode == "control-timeout":
+        handshake(sock)
+        for _ in range(8):
+            sock.sendall(frame(9, b"probe"))
+            assert read_frame(sock) == (10, b"probe")
+            time.sleep(0.025)
+        sock.sendall(frame(1, b"ready"))
+        op, data = read_frame(sock)
+        assert op == 8
+        sock.sendall(frame(8, data))
+        assert sock.recv(1) == b""
+        return
+    if mode == "commands":
+        handshake(sock)
+        ids = []
+        for _ in range(33):
+            op, data = read_frame(sock)
+            assert op == 1
+            ids.append(json.loads(data)["id"])
+        assert ids == list(range(32)) + [99]
+        time.sleep(0.15)
+        assert read_frame(sock) == (1, b'{"id":32}')
+        sock.sendall(frame(1, b'{"id":99,"ok":true}'))
+        for id in reversed(range(33)):
+            if id % 5 == 0:
+                sock.sendall(frame(1, b'{"event":"tick"}'))
+            sock.sendall(frame(1, json.dumps({"id": id, "ok": True}, separators=(",", ":")).encode()))
+        sock.sendall(frame(8, struct.pack("!H", 1001) + b"done"))
+        assert read_frame(sock) == (8, struct.pack("!H", 1001) + b"done")
+        assert sock.recv(1) == b""
+        return
+    if mode == "control-backpressure":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        handshake(sock)
+        writer_errors = []
+
+        def flood():
+            try:
+                sock.sendall(frame(9, b"x" * 125) * 50000)
+            except BaseException as error:
+                writer_errors.append(error)
+
+        writer = threading.Thread(target=flood, daemon=True)
+        writer.start()
+        time.sleep(3)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
+        pongs = 0
+        while True:
+            op, data = read_frame(sock)
+            if op == 1:
+                assert data == b"after backpressure"
+                break
+            assert op == 10 and data == b"x" * 125
+            pongs += 1
+        while pongs < 50000:
+            assert read_frame(sock) == (10, b"x" * 125)
+            pongs += 1
+        writer.join(5)
+        assert not writer.is_alive() and not writer_errors
+        sock.sendall(frame(1, b"ready"))
+        op, data = read_frame(sock)
+        assert op == 8
+        sock.sendall(frame(8, data))
+        assert sock.recv(1) == b""
+        return
+    if mode == "reset":
+        handshake(sock)
+        assert read_frame(sock) == (1, b"reset")
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        return
+    if mode == "write-timeout":
         handshake(sock)
         time.sleep(0.7)
         return
@@ -156,6 +251,27 @@ def fixture(sock, mode, wire=None, code=1002):
     op, body = read_frame(sock)
     assert op == 8 and body[:2] == struct.pack("!H", code), (op, body)
     assert sock.recv(1) == b""
+
+
+def resource_fixture(listener):
+    with listener.accept()[0] as peer:
+        peer.settimeout(5)
+        handshake(peer)
+        assert peer.recv(1) == b""
+    for _ in range(6):
+        for mode in ("peer", "bad-upgrade", "protocol", "reset", "close-timeout", "abort", "setup-timeout"):
+            with listener.accept()[0] as peer:
+                peer.settimeout(5)
+                if mode == "setup-timeout":
+                    time.sleep(0.1)
+                elif mode == "peer":
+                    handshake(peer, suffix=frame(8, struct.pack("!H", 1000)))
+                    assert read_frame(peer) == (8, struct.pack("!H", 1000))
+                    assert peer.recv(1) == b""
+                elif mode == "protocol":
+                    fixture(peer, "protocol-error", b"\x81\x80")
+                else:
+                    fixture(peer, "close-abort" if mode == "abort" else mode)
 
 
 def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False, hostname=None):
@@ -169,6 +285,9 @@ def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False,
 
         def server():
             try:
+                if mode == "resources":
+                    resource_fixture(listener)
+                    return
                 with listener.accept()[0] as peer:
                     peer.settimeout(10)
                     if tls:
@@ -188,7 +307,7 @@ def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False,
         host = hostname or ("[::1]" if ipv6 else "127.0.0.1")
         scheme = "wss" if tls else "ws"
         result = subprocess.run([str(binary), f"{scheme}://{host}:{port}/chat?q=1", mode, ca],
-                                capture_output=True, text=True, timeout=15)
+                                capture_output=True, text=True, timeout=30)
         thread.join(11)
         assert not thread.is_alive(), "fixture thread did not finish"
         assert result.returncode == 0, result.stdout + result.stderr
@@ -204,8 +323,9 @@ def main():
     binary = args.binary.resolve()
     for mode in ("echo", "drop", "fragments", "empty-close", "eof", "protocols",
                  "bad-upgrade", "handshake-timeout", "read-timeout", "write-timeout",
-                 "close-handshake", "close-inflight", "close-abort",
-                 "close-timeout", "close-eof", "close-protocol-error"):
+                 "buffered-timeout", "partial-timeout", "control-timeout", "control-backpressure",
+                 "commands", "large", "reset",
+                 "close-handshake", "close-abort", "close-timeout", "close-eof", "close-protocol-error", "resources"):
         run_case(binary, mode)
     for wire, code in [(b"\x81\x80", 1002), (frame(1, b"\xff"), 1007),
                        (frame(0, b"orphan"), 1002), (frame(8, b"x"), 1002),
@@ -231,6 +351,8 @@ def main():
             run_case(binary, "echo", tls=context, ca=str(cert), hostname="localhost")
             assert server_names[-1] == "localhost", "DNS connections must send SNI"
             run_case(binary, "write-timeout", tls=context, ca=str(cert))
+            for mode in ("read-timeout", "partial-timeout", "control-timeout", "large"):
+                run_case(binary, mode, tls=context, ca=str(cert))
             run_case(binary, "tls-reject", tls=context)
             run_case(binary, "tls-reject", tls=context, ca=str(cert), hostname="wrong.localhost")
     else:

@@ -21,6 +21,7 @@ proc main(url, token, subprotocol, caFile: string) {.passive.} =
       case message.kind
       of wmText: echo message.data
       of wmBinary: echo "Binary message: ", message.data.len, " bytes"
+      of wmTimeout: discard
       of wmClose:
         echo "Closed: ", message.closeSource, " ", message.code, " ", message.data
   except ErrorCode as e:

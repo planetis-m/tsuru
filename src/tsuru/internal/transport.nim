@@ -134,11 +134,11 @@ proc readSome*[T: char | byte](t: var Transport; buf: var openArray[T]; dl: Dead
     if err == EAGAIN: waitReady(t.fd, {evRead}, dl)
     elif err != EINTR: raise IOError
 
-proc writeAll*[T: char | byte](t: var Transport; data: openArray[T]; dl: Deadline)
+proc writeAll*[T: char | byte](t: var Transport; data: openArray[T]; sent: var int; dl: Deadline)
     {.passive, raises.} =
   ## Write task-owned memory. Keep data alive and unchanged until this call returns.
   ## TLS retries retain the same pointer and length across readiness waits.
-  var sent = 0
+  ## sent is an offset in data; preserve both across a resumable timeout.
   while sent < data.len:
     checkDeadline(dl)
     when defined(tsuruTls):
@@ -161,6 +161,11 @@ proc writeAll*[T: char | byte](t: var Transport; data: openArray[T]; dl: Deadlin
       let err = errno()
       if err == EAGAIN: waitReady(t.fd, {evWrite}, dl)
       elif err != EINTR: raise IOError
+
+proc writeAll*[T: char | byte](t: var Transport; data: openArray[T]; dl: Deadline)
+    {.passive, raises.} =
+  var sent = 0
+  writeAll(t, data, sent, dl)
 
 proc writeAll*(t: var Transport; data: string; dl: Deadline) {.passive, raises.} =
   ## Copy string chunks into task-owned memory before any suspended write.

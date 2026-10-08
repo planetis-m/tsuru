@@ -21,9 +21,6 @@ proc main(url: string) {.passive.} =
       if not ws.close():
         echo "close failed"
         atomicStore(failed, 1)
-      elif ws.waitClose().closeSource != csPeer:
-        echo "close handshake failed"
-        atomicStore(failed, 1)
   except ErrorCode as e:
     echo "Connection failed: ", e
     atomicStore(failed, 1)
