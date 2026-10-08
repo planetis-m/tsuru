@@ -43,6 +43,15 @@ proc main(url, mode, caFile: string) {.passive.} =
         ws.send("\0\xff\x80", binary = true)
         let binary = ws.recv()
         doAssert binary.kind == wmBinary and binary.data == "\0\xff\x80"
+        for n in [0, 3, 8192, 65536, 256000]:
+          var bytes = newSeq[byte](n)
+          var expectedData = newString(n)
+          for i in 0..<n:
+            bytes[i] = byte(i and 255)
+            expectedData[i] = char(bytes[i])
+          ws.send(bytes)
+          let reply = ws.recv()
+          doAssert reply.kind == wmBinary and reply.data == expectedData
         ws.ping("probe")
         ws.send("after ping")
         doAssert ws.recv().data == "after ping"
@@ -65,6 +74,8 @@ proc main(url, mode, caFile: string) {.passive.} =
       elif mode == "protocols":
         doAssert ws.protocol == "chat"
         doAssert ws.recv().data == "ready"
+        let next = ws.recv()
+        doAssert next.kind == wmBinary and next.data == "\0\xff"
         ws.close()
       elif mode == "write-timeout":
         ws.send(repeat("x", 16 * 1024 * 1024))

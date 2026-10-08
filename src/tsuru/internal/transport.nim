@@ -2,7 +2,7 @@
 ## Deadlines never leave a kernel read holding a pointer into an expired task.
 import std/[ioring, dns, strutils]
 from std/socket import toErr
-from std/posix/posix import errno, EAGAIN, EINTR, SockAddr, TSa_Family
+from std/posix/posix import errno, EAGAIN, EINTR, SockAddr, TSa_Family, O_CLOEXEC
 
 when not defined(linux):
   {.error: "Tsuru currently supports Linux.".}
@@ -118,7 +118,7 @@ proc open*(t: var Transport; host: string; port: uint16; secure: bool;
   if inetPton(cint(family), toCString(ip), addr raw[addressOffset]) != 1: raise ValueError
   checkDeadline(dl)
   # Linux SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, set atomically at creation.
-  let socketFd = cSocket(cint(family), cint(SOCK_STREAM) or O_NONBLOCK or 0x80000,
+  let socketFd = cSocket(cint(family), cint(SOCK_STREAM) or O_NONBLOCK or O_CLOEXEC,
     cint(IPPROTO_TCP))
   if socketFd < 0: raise IOError
   t.descriptor = int(socketFd) + 1
@@ -181,33 +181,38 @@ proc readSome*(t: var Transport; buf: var openArray[char]; dl: Deadline): int
     if err == EAGAIN: waitReady(t.fd, {evRead}, dl)
     elif err != EINTR: raise IOError
 
+proc writeAll*(t: var Transport; data: openArray[char]; dl: Deadline) {.passive, raises.} =
+  ## Write task-owned memory. Keep data alive and unchanged until this call returns.
+  ## TLS retries retain the same pointer and length across readiness waits.
+  var sent = 0
+  while sent < data.len:
+    checkDeadline(dl)
+    when defined(tsuruTls):
+      let ssl = t.ssl
+      if ssl != nil:
+        clearErrors()
+        let n = tlsWrite(ssl, addr data[sent], cint(data.len - sent))
+        if n > 0: sent += int(n)
+        else:
+          let err = tlsError(ssl, n)
+          if err == 2: waitReady(t.fd, {evRead}, dl)
+          elif err == 3: waitReady(t.fd, {evWrite}, dl)
+          else: raise IOError
+        continue
+    let n = cSend(t.fd, addr data[sent], csize_t(data.len - sent), 0x4000)
+    if n > 0: sent += n
+    elif n == 0: raise IOError
+    else:
+      let err = errno()
+      if err == EAGAIN: waitReady(t.fd, {evWrite}, dl)
+      elif err != EINTR: raise IOError
+
 proc writeAll*(t: var Transport; data: string; dl: Deadline) {.passive, raises.} =
-  ## Complete the write under one deadline, retaining the retry buffer across TLS waits.
+  ## Copy string chunks into task-owned memory before any suspended write.
   var buf = default(array[8192, char])
   var off = 0
   while off < data.len:
     let count = min(buf.len, data.len - off)
     copyMem(addr buf[0], readRawData(data, off), count)
-    var sent = 0
-    while sent < count:
-      checkDeadline(dl)
-      when defined(tsuruTls):
-        let ssl = t.ssl
-        if ssl != nil:
-          clearErrors()
-          let n = tlsWrite(ssl, addr buf[sent], cint(count - sent))
-          if n > 0: sent += int(n)
-          else:
-            let err = tlsError(ssl, n)
-            if err == 2: waitReady(t.fd, {evRead}, dl)
-            elif err == 3: waitReady(t.fd, {evWrite}, dl)
-            else: raise IOError
-          continue
-      let n = cSend(t.fd, addr buf[sent], csize_t(count - sent), 0x4000)
-      if n > 0: sent += n
-      elif n == 0: raise IOError
-      else:
-        let err = errno()
-        if err == EAGAIN: waitReady(t.fd, {evWrite}, dl)
-        elif err != EINTR: raise IOError
+    writeAll(t, toOpenArray(buf, 0, count - 1), dl)
     off += count

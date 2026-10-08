@@ -78,6 +78,7 @@ Custom headers cannot replace handshake fields or add an HTTP request body.
 | --- | --- |
 | `connectWebSocket(url, options, dl)` | TCP/TLS connection and validated HTTP upgrade |
 | `ws.send(data, binary = false, dl)` | One masked message; text must be valid UTF-8 |
+| `ws.send(bytes: seq[byte], dl)` | One binary message without converting bytes to a string |
 | `ws.recv(dl)` | Complete text/binary message or `wmClose`; answers pings automatically |
 | `ws.ping(data = "", dl)` | Ping payload of at most 125 bytes; `recv` consumes pongs |
 | `ws.close(code = 1000, reason = "", dl)` | Send close and wait up to five seconds for the peer |
@@ -89,6 +90,29 @@ default. Pass `afterMs(1000)` to tighten a single operation's deadline.
 The connection budget covers DNS, TCP, TLS and HTTP together. Receive budgets
 cover the whole message, including all fragments and interleaved controls.
 Message limits default to 16 MiB and also bound assembled fragments.
+
+Binary sequences can be sent directly:
+
+```nim
+ws.send(@[0'u8, 255'u8, 128'u8])
+```
+
+Large sends use an 8 KiB masking buffer. Incoming messages release consumed
+wire data before returning their payload to the application.
+
+For a connection that can be quiet for several minutes, increase
+`options.timeoutMs` to match that receive budget. The
+[receive example](examples/receive.nim) listens until the peer closes, reports
+the close reason, and accepts optional authentication, subprotocol and CA settings:
+
+```sh
+nimony c -d:tsuruTls -o:build/receive examples/receive.nim
+TSURU_PROTOCOL=events.v1 build/receive wss://your-server.example/events
+```
+
+Set `TSURU_TOKEN` for a bearer token and `TSURU_CA_FILE` for a custom PEM trust
+file. The example gives connection setup ten seconds and each receive five
+minutes; controls do not extend a receive's deadline.
 
 Own a connection from **one task**, with sequential calls. Concurrent readers
 or writers on the same handle are unsupported. Keep calling `recv` while

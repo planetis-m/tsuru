@@ -4,11 +4,11 @@ Tested on Linux x86-64 with Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 
 | Configuration | Result |
 | --- | --- |
-| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 26 network fixtures passed |
+| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 27 network fixtures passed |
 | Release, plain | Unit/fuzz, 22 network fixtures and unsupported-TLS check passed |
-| Release, TLS | Unit/fuzz and 26 network fixtures passed |
+| Release, TLS | Unit/fuzz and 27 network fixtures passed |
 | Danger, plain | Unit/fuzz, 22 network fixtures and unsupported-TLS check passed |
-| Danger, TLS | Unit/fuzz and 26 network fixtures passed |
+| Danger, TLS | Unit/fuzz and 27 network fixtures passed |
 | Hashi temporary compatibility copy, fresh caches | Echo interoperability passed |
 
 The independent Python fixtures exercise actual TCP and TLS connections and
@@ -22,7 +22,10 @@ release, localhost DNS, and IPv6 literals. The plain build also checks that
 
 TLS tests cover round trips with a trusted temporary certificate for an IP and
 a DNS name, SNI, rejection of an untrusted certificate, and rejection of a
-trusted certificate for a different hostname. All fixtures use loopback.
+trusted certificate for a different hostname, plus a send deadline while a
+TLS peer stops reading. Binary sequence round trips cross masking-buffer and
+extended-length boundaries. Upgrade fixtures include consecutive messages to
+check that receiving one preserves the next. All fixtures use loopback.
 The library and its C BIO were tested with AddressSanitizer and
 UndefinedBehaviorSanitizer. Tests also run in release and danger modes;
 protocol validation remains enabled.

@@ -117,7 +117,7 @@ def fixture(sock, mode, wire=None, code=1002):
         handshake(sock, suffix=b"\x81\x08trunc")
         return
     if mode == "protocols":
-        handshake(sock, protocols=True, suffix=frame(1, b"ready"))
+        handshake(sock, protocols=True, suffix=frame(1, b"ready") + frame(2, b"\x00\xff"))
         op, data = read_frame(sock)
         assert op == 8
         sock.sendall(frame(8, data))
@@ -202,6 +202,7 @@ def main():
             run_case(binary, "echo", tls=context, ca=str(cert))
             run_case(binary, "echo", tls=context, ca=str(cert), hostname="localhost")
             assert server_names[-1] == "localhost", "DNS connections must send SNI"
+            run_case(binary, "write-timeout", tls=context, ca=str(cert))
             run_case(binary, "tls-reject", tls=context)
             run_case(binary, "tls-reject", tls=context, ca=str(cert), hostname="wrong.localhost")
     else:

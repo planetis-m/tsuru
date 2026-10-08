@@ -1,11 +1,20 @@
 # API contracts
 
-`import tsuru` exposes the application API. `tsuru/protocol` contains the
-independent codec and state machine; `tsuru/handshake` contains URI parsing and
-upgrade validation.
+| Import | Responsibility |
+| --- | --- |
+| `tsuru` | Connection handles, options, messages and passive operations |
+| `tsuru/protocol` | Pure framing, masking and message assembly |
+| `tsuru/handshake` | URL parsing, request construction and upgrade validation |
+
+Application code normally needs only `import tsuru`.
 
 `buildRequest` expects the endpoint returned by `parseEndpoint` and a base64 nonce.
 `handleFrame` expects a frame accepted by `parseFrame`.
+`frameHeader` includes the four-byte mask key; `maskInto` applies that key to
+payload chunks, with `offset` measured from the start of the frame payload.
+Its destination must hold at least `source.len` writable bytes. Use a fresh
+cryptographic mask for each frame. `encodeFrame` builds a complete wire string
+when a standalone encoded frame is needed.
 
 A `WebSocket` is a reference handle: aliases refer to the same connection.
 Use it from one owning task, one operation at a time. No application locks are
@@ -13,6 +22,16 @@ needed when each task owns its own connection. Do not abort a connection from
 another task while an operation is suspended. The handle releases its transport
 when its last reference goes away; explicit `abort` gives deterministic cleanup.
 The library never shuts down the shared worker pool.
+
+`send(string, binary = false, dl)` sends text by default; `binary = true` sends
+the string's bytes unchanged as binary. `send(seq[byte], dl)` always sends a
+binary message and avoids a sequence-to-string conversion. Both send a single
+frame using bounded masked chunks, retaining only an 8 KiB scratch buffer in
+addition to the caller's payload. Splitting a write into chunks does not split
+the WebSocket message. The header shares the first chunk with the payload.
+
+`recv` releases consumed wire data before returning a message and retains any
+following frames for the next call. Returned payloads own their data.
 
 A default `WebSocket()` is closed and owns no descriptor. Create live connections
 with `connectWebSocket`.
@@ -31,6 +50,17 @@ is the earlier of that instant and `afterMs(options.timeoutMs)`. Deadlines start
 fresh for each call, including preparation and buffered receive processing.
 An expired deadline closes a live connection even when the complete message is
 already buffered. The close handshake is also capped at five seconds.
+
+For a quiet connection, choose a receive budget that fits the application's
+expected idle periods. Incoming pings and pongs do not restart that budget.
+`recv` may suspend while reading fragments or writing a pong or close reply;
+`send`, `ping`, `close` and `connectWebSocket` may also suspend. `abort`, `state`,
+`open` and `protocol` never suspend. Calling `ping` does not start a background
+reader; pong replies are consumed during subsequent receives.
+
+The [receive example](../examples/receive.nim) combines authentication,
+subprotocol negotiation, optional custom CA trust and a five-minute receive
+budget. Its connection setup has a separate ten-second deadline.
 
 `recv` returns `Message(kind, data, code)`. `code` is meaningful for `wmClose`.
 Empty text/binary messages are normal messages, distinct from closure. After a

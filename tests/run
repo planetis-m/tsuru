@@ -22,7 +22,9 @@ for test in tests/t*.nim; do
   fi
 done
 "$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:build/client tests/client.nim
-"$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:build/echo examples/echo.nim
+for example in examples/*.nim; do
+  "$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:"build/$(basename "$example" .nim)" "$example"
+done
 if [[ "$network" == 1 ]]; then
   extra=()
   if [[ "$tls" == 1 ]]; then extra+=(--tls); fi

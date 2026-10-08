@@ -87,17 +87,27 @@ proc fill(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
   endStore(ws.buffer)
   result = n > 0
 
-proc clientFrame(op: Opcode; data: string; frame: var string) {.raises.} =
+proc freshMask(key: var array[4, uint8]) {.raises.} =
   let bytes = randomBytes(4)
-  var key = default(array[4, uint8])
   for i in 0..3: key[i] = uint8(ord(bytes[i]))
-  frame = encodeFrame(op, data, key)
 
-proc emit(ws: WebSocket; op: Opcode; data: string; dl: Deadline) {.passive, raises.} =
+proc emit[T: string | seq[byte]](ws: WebSocket; op: Opcode; data: T; dl: Deadline)
+    {.passive, raises, untyped.} =
   checkDeadline(dl)
-  var frame = ""
-  clientFrame(op, data, frame)
-  writeAll(ws.transport, frame, dl)
+  var key = default(array[4, uint8])
+  freshMask(key)
+  let head = frameHeader(op, len(data), key)
+  var buf = default(array[8192, char])
+  copyMem(addr buf[0], readRawData(head), head.len)
+  var prefix = head.len
+  var off = 0
+  while prefix > 0 or off < len(data):
+    let count = min(buf.len - prefix, len(data) - off)
+    maskInto(cast[ptr UncheckedArray[char]](addr buf[prefix]),
+      toOpenArray(data, off, off + count - 1), key, off)
+    writeAll(ws.transport, toOpenArray(buf, 0, prefix + count - 1), dl)
+    off += count
+    prefix = 0
 
 proc prepareHandshake(url: string; options: WebSocketOptions; endpoint: var Endpoint;
                       key, request: var string) {.raises.} =
@@ -134,6 +144,7 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
     checkHandshake(head, key, options.protocols, result.selectedProtocol)
     checkDeadline(deadline)
     result.offset = endHead + 4
+    compact(result)
     result.status = wsOpen
   except ErrorCode as e:
     terminate(result, csTransportError)
@@ -147,6 +158,17 @@ proc send*(ws: WebSocket; data: string; binary = false; dl = never) {.passive, r
   if not binary and not validUtf8(data): raise ValueError
   try:
     emit(ws, (if binary: opBinary else: opText), data, deadline)
+  except ErrorCode as e:
+    transportFailed(ws)
+    raise e
+
+proc send*(ws: WebSocket; data: seq[byte]; dl = never) {.passive, raises.} =
+  ## Send one complete masked binary message without converting bytes to a string.
+  if ws.status != wsOpen: raise BadOperation
+  let deadline = budget(ws, dl)
+  if data.len > ws.maxMessage: raise ContentTooLong
+  try:
+    emit(ws, opBinary, data, deadline)
   except ErrorCode as e:
     transportFailed(ws)
     raise e
@@ -196,6 +218,7 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive, raises.} =
         of akPong: emit(ws, opPong, action.data, deadline)
         of akMessage:
           if ws.status == wsOpen:
+            compact(ws)
             return Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
         of akError: failProtocol(ws, action.code, deadline)
         of akClose:

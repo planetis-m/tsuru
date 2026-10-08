@@ -65,7 +65,8 @@ proc closeBody*(code: int; reason = ""): string =
   result.add char(code and 255)
   result.add reason
 
-proc header(op: Opcode; n: int; fin: bool): string =
+proc frameHeader*(op: Opcode; n: int; key: array[4, uint8]; fin = true): string =
+  ## Encode a masked client header, including the key, for a payload of n bytes.
   result = ""
   result.add char(ord(op) or (if fin: 128 else: 0))
   let maskBit = 128
@@ -78,15 +79,21 @@ proc header(op: Opcode; n: int; fin: bool): string =
     result.add char(127 or maskBit)
     for shift in countdown(7, 0):
       result.add char((uint64(n) shr (shift * 8)) and 255'u64)
+  for b in key: result.add char(b)
+
+proc maskInto*[T: char | byte](dest: ptr UncheckedArray[char]; source: openArray[T];
+                              key: array[4, uint8]; offset = 0) =
+  ## Mask source into dest, which must have room for source.len bytes.
+  ## offset is the source chunk's position within the complete frame payload.
+  for i in 0..<source.len:
+    dest[i] = char(ord(source[i]) xor int(key[(offset + i) and 3]))
 
 proc encodeFrame*(op: Opcode; data: string; key: array[4, uint8]; fin = true): string =
   ## Encode a masked client frame. Supply a fresh cryptographic key for every call.
-  result = header(op, data.len, fin)
+  result = frameHeader(op, data.len, key, fin)
   let headerLen = result.len
-  let dest = beginStore(result, headerLen + 4 + data.len, headerLen)
-  for i in 0..3: dest[i] = char(key[i])
-  let source = readRawData(data)
-  for i in 0..<data.len: dest[i + 4] = char(ord(source[i]) xor int(key[i and 3]))
+  let dest = beginStore(result, headerLen + data.len, headerLen)
+  maskInto(cast[ptr UncheckedArray[char]](dest), data, key)
   endStore(result)
 
 proc parseFrame*(data: string; start: int; frame: var Frame;
