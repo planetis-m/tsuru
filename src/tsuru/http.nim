@@ -26,7 +26,7 @@ proc cleanValue*(s: string): bool =
 proc hasToken*(value, token: string): bool =
   result = false
   for part in value.split(','):
-    if part.strip().toLowerAscii() == token: return true
+    if part.strip().cmpIgnoreCase(token) == 0: return true
 
 proc header*(response: HttpResponse; name: string; default = ""): string =
   ## First matching value, or default. Iterate headers to retain duplicate values.

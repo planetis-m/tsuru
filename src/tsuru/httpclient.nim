@@ -15,11 +15,11 @@ type
     maxBody*: int ## Maximum response payload bytes, also enforced for streaming reads.
     caFile*: string ## Empty uses system trust; HTTPS requires -d:tsuruTls.
   BodyPhase = enum
-    hpClosed, hpReady, hpLength, hpChunkHead, hpChunkData, hpChunkEnd, hpTrailers, hpEof
+    hpClosed, hpReady, hpLength, hpChunkHead, hpChunkData, hpChunkEnd, hpEof
   HttpClient* = ref object
     transport: Transport
-    endpoint: Endpoint
-    options: HttpOptions
+    authority, target: string
+    maxBody: int
     phase: BodyPhase
     deadline: Deadline
     keepAlive: bool
@@ -63,7 +63,7 @@ proc connectHttp*(url: string; dl: Deadline; options = initHttpOptions()): HttpC
   prepareEndpoint(url, ep)
   if options.maxBody <= 0 or '\0' in options.caFile: raise ValueError
   checkDeadline(dl)
-  result = HttpClient(endpoint: ep, options: options)
+  result = HttpClient(authority: ep.authority, target: ep.target, maxBody: options.maxBody)
   try:
     open(result.transport, ep.host, ep.port, ep.secure, options.caFile, dl)
     checkDeadline(dl)
@@ -107,8 +107,8 @@ proc request*(c: HttpClient; dl: Deadline; meth = "GET"; target = "";
   if c.phase == hpClosed: raise EndOfStreamError
   if c.phase != hpReady: raise ValueError
   var head = ""
-  prepareHead(c.endpoint.authority, meth,
-    (if target.len == 0: c.endpoint.target else: target), body.len, headers, head)
+  prepareHead(c.authority, meth,
+    (if target.len == 0: c.target else: target), body.len, headers, head)
   c.deadline = dl
   c.received = 0
   try:
@@ -124,7 +124,7 @@ proc request*(c: HttpClient; dl: Deadline; meth = "GET"; target = "";
     case parsed.framing
     of bodyNone: finishBody(c)
     of bodyLength:
-      if parsed.length > c.options.maxBody: raise ContentTooLong
+      if parsed.length > c.maxBody: raise ContentTooLong
       c.remaining = parsed.length
       if c.remaining == 0: finishBody(c)
       else: c.phase = hpLength
@@ -151,6 +151,19 @@ proc readLine(c: HttpClient; limit: int; dl: Deadline): string {.passive, raises
     if available >= limit: raise ContentTooLong
     if fill(c, dl) == 0: raise EndOfStreamError
 
+proc readTrailers(c: HttpClient; dl: Deadline) {.passive, raises.} =
+  var count = 0
+  var bytes = 0
+  while true:
+    let line = readLine(c, MaxHeadLen - bytes, dl)
+    bytes += line.len
+    if line == "\r\n": return
+    inc count
+    if count > MaxTrailerCount: raise ContentTooLong
+    let colon = line.find(':')
+    if colon <= 0 or not validToken(line[0..<colon]) or
+        not cleanValue(line[colon + 1..<line.len - 2]): raise SyntaxError
+
 proc readBody*(c: HttpClient; dest: var openArray[char]; dl = never): int
     {.passive, raises.} =
   ## Copy the next body bytes into caller-owned storage. With a nonempty dest,
@@ -168,26 +181,16 @@ proc readBody*(c: HttpClient; dest: var openArray[char]; dl = never): int
         let line = readLine(c, MaxChunkSizeDigits + MaxChunkExtLen + 2, deadline)
         var n = 0
         if parseChunkSize(line, n) < 0: raise SyntaxError
-        if n > c.options.maxBody - c.received: raise ContentTooLong
+        if n > c.maxBody - c.received: raise ContentTooLong
+        if n == 0:
+          readTrailers(c, deadline)
+          finishBody(c)
+          return
         c.remaining = n
-        c.phase = if n == 0: hpTrailers else: hpChunkData
+        c.phase = hpChunkData
       of hpChunkEnd:
         if readLine(c, 2, deadline) != "\r\n": raise SyntaxError
         c.phase = hpChunkHead
-      of hpTrailers:
-        var count = 0
-        var bytes = 0
-        while true:
-          let line = readLine(c, MaxHeadLen - bytes, deadline)
-          bytes += line.len
-          if line == "\r\n": break
-          inc count
-          if count > MaxTrailerCount: raise ContentTooLong
-          let colon = line.find(':')
-          if colon <= 0 or not validToken(line[0..<colon]) or
-              not cleanValue(line[colon + 1..<line.len - 2]): raise SyntaxError
-        finishBody(c)
-        return
       of hpLength, hpChunkData, hpEof:
         if c.pos == c.input.len:
           if fill(c, deadline) == 0:
@@ -196,7 +199,7 @@ proc readBody*(c: HttpClient; dest: var openArray[char]; dl = never): int
             return
         var n = min(dest.len, c.input.len - c.pos)
         if c.phase != hpEof: n = min(n, c.remaining)
-        if n > c.options.maxBody - c.received: raise ContentTooLong
+        if n > c.maxBody - c.received: raise ContentTooLong
         copyMem(addr dest[0], readRawData(c.input, c.pos), n)
         c.pos += n
         c.received += n
