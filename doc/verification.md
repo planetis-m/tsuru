@@ -23,8 +23,8 @@ release, localhost DNS, and IPv6 literals. The plain build also checks that
 TLS tests cover round trips with a trusted temporary certificate for an IP and
 a DNS name, SNI, rejection of an untrusted certificate, and rejection of a
 trusted certificate for a different hostname, plus a send deadline while a
-TLS peer stops reading. Binary sequence round trips cross masking-buffer and
-extended-length boundaries. Upgrade fixtures include consecutive messages to
+TLS peer stops reading. Binary sequence round trips cover extended lengths and
+send-buffer reuse. Upgrade fixtures include consecutive messages to
 check that receiving one preserves the next. All fixtures use loopback.
 The library and its C BIO were tested with AddressSanitizer and
 UndefinedBehaviorSanitizer. Tests also run in release and danger modes;
@@ -35,6 +35,14 @@ length boundaries and malformed input. A seeded fuzz program supplies 100,000
 cases to the frame, UTF-8, URL and HTTP upgrade parsers per run. This is a
 deterministic malformed-input test, not a coverage-guided fuzz campaign.
 The Autobahn client-role conformance suite has not been run.
+
+## Masked-copy timing
+
+A local release benchmark copied and masked a 1 MiB payload 512 times per
+sample, comparing Tsuru's payload view at client-header offset 14 with Hashi's
+aligned mask kernel. Seven samples alternated execution order and compared the
+resulting bytes. Median times were 14.63 ms for Tsuru and 14.59 ms for Hashi.
+This measures the copy/mask stage; it does not measure TCP or TLS throughput.
 
 ## Hashi interoperability
 

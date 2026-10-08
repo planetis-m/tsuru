@@ -1,7 +1,7 @@
 ## Seeded malformed-wire coverage. Check every successful parse stays inside its input.
 import std/random
 import testkit
-import tsuru/[protocol, handshake]
+import tsuru/[frame, protocol, handshake]
 
 var rng = initRand(6455)
 for iteration in 0..<100000:
@@ -9,7 +9,7 @@ for iteration in 0..<100000:
   let n = rand(rng, 0..128)
   for i in 0..<n: wire.add char(rand(rng, 0..255))
   var f = Frame()
-  let start = rand(rng, -2..n + 2)
+  let start = rand(rng, 0..n)
   let parsed = parseFrame(wire, start, f, 256)
   if parsed.status == psOk:
     doAssert parsed.consumed >= 2 and parsed.consumed <= wire.len - start

@@ -12,6 +12,7 @@ type SockaddrIn6 = object
 
 const MsgNoSignal* = 0x4000.cint
   ## Suppress SIGPIPE for this send without changing process signal handlers.
+const TcpNoDelay = 1.cint
 
 proc recv*(fd: cint; buf: pointer; len: csize_t; flags: cint): int
   {.importc: "recv", header: "<sys/socket.h>".}
@@ -23,6 +24,13 @@ proc inetPton(family: cint; src: cstring; dest: pointer): cint
   {.importc: "inet_pton", header: "<arpa/inet.h>".}
 proc htons(value: uint16): uint16
   {.importc: "htons", header: "<arpa/inet.h>".}
+proc setsockopt(fd, level, option: cint; value: pointer; length: SockLen): cint
+  {.importc: "setsockopt", header: "<sys/socket.h>".}
+
+proc setNoDelay*(fd: cint) =
+  ## Disable Nagle for small WebSocket messages and control replies.
+  var yes = 1.cint
+  discard setsockopt(fd, IPPROTO_TCP, TcpNoDelay, addr yes, SockLen(sizeof(yes)))
 
 proc prepareConnect*(ip: string; port: uint16; address: var Sockaddr_storage;
                      addressLen: var SockLen; fd: var cint) {.raises.} =

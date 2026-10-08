@@ -78,6 +78,7 @@ proc open*(t: var Transport; host: string; port: uint16; secure: bool;
   discard submitConnect(socketFd, sa, addressLen, dl, c, addr n)
   suspend()
   if n != 0: raise toErr(n)
+  setNoDelay(socketFd)
   when defined(tsuruTls):
     if secure:
       let tlsMode = tlsMethod()
@@ -108,7 +109,7 @@ proc open*(t: var Transport; host: string; port: uint16; secure: bool;
           elif err == TlsWantWrite: waitReady(t.fd, {evWrite}, dl)
           else: raise PermissionDenied
 
-proc readSome*(t: var Transport; buf: var openArray[char]; dl: Deadline): int
+proc readSome*[T: char | byte](t: var Transport; buf: var openArray[T]; dl: Deadline): int
     {.passive, raises.} =
   ## Read into task-owned memory using a nonblocking syscall, then wait if needed.
   result = 0
@@ -133,7 +134,8 @@ proc readSome*(t: var Transport; buf: var openArray[char]; dl: Deadline): int
     if err == EAGAIN: waitReady(t.fd, {evRead}, dl)
     elif err != EINTR: raise IOError
 
-proc writeAll*(t: var Transport; data: openArray[char]; dl: Deadline) {.passive, raises.} =
+proc writeAll*[T: char | byte](t: var Transport; data: openArray[T]; dl: Deadline)
+    {.passive, raises.} =
   ## Write task-owned memory. Keep data alive and unchanged until this call returns.
   ## TLS retries retain the same pointer and length across readiness waits.
   var sent = 0
@@ -143,7 +145,8 @@ proc writeAll*(t: var Transport; data: openArray[char]; dl: Deadline) {.passive,
       let ssl = t.ssl
       if ssl != nil:
         clearErrors()
-        let n = tlsWrite(ssl, addr data[sent], cint(data.len - sent))
+        let count = min(data.len - sent, int(high(cint)))
+        let n = tlsWrite(ssl, addr data[sent], cint(count))
         if n > 0: sent += int(n)
         else:
           let err = tlsError(ssl, n)

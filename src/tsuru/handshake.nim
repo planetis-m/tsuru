@@ -25,7 +25,7 @@ type
 
 proc initWebSocketOptions*(maxMessage: Positive = DefaultMaxMessage;
                            timeoutMs: Positive = 30_000): WebSocketOptions =
-  ## Default to a 16 MiB message limit and a 30 second operation budget.
+  ## Default to a 64 MiB message limit and a 30 second operation budget.
   WebSocketOptions(maxMessage: maxMessage, timeoutMs: timeoutMs)
 
 proc acceptKey*(key: string): string =

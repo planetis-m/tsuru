@@ -4,18 +4,18 @@
 | --- | --- |
 | `tsuru` | Connection handles, options, messages and passive operations |
 | `tsuru/frame` | Pure frame parsing, headers and masking |
-| `tsuru/protocol` | Message assembly, UTF-8 and close handling; re-exports the codec |
+| `tsuru/protocol` | Message assembly, UTF-8 and close handling |
 | `tsuru/handshake` | URL parsing, request construction and upgrade validation |
 
 Application code normally needs only `import tsuru`.
 
 `buildRequest` expects the endpoint returned by `parseEndpoint` and a base64 nonce.
 `handleFrame` expects a frame accepted by `parseFrame`.
-`frameHeader` includes the four-byte mask key; `maskInto` applies that key to
-payload chunks, with `offset` measured from the start of the frame payload.
-Its destination is a mutable `openArray[char]` of at least `source.len` bytes.
-Use a fresh
-cryptographic mask for each frame. `encodeFrame` builds a complete wire string
+`parseFrame` expects `0 <= start <= data.len` and a nonnegative payload limit;
+`handleFrame` expects a nonnegative message limit.
+`frameHeader` includes the four-byte mask key; `maskPayload` applies that key
+in place to a complete payload, passed as a mutable `openArray[byte]`.
+Use a fresh cryptographic mask for each frame. `encodeFrame` builds a complete wire string
 when a standalone encoded frame is needed.
 
 A `WebSocket` is a reference handle: aliases refer to the same connection.
@@ -26,14 +26,20 @@ when its last reference goes away; explicit `abort` gives deterministic cleanup.
 The library never shuts down the shared worker pool.
 
 `send(string, binary = false, dl)` sends text by default; `binary = true` sends
-the string's bytes unchanged as binary. `send(seq[byte], dl)` always sends a
-binary message and avoids a sequence-to-string conversion. Both send a single
-frame using bounded masked chunks, retaining only an 8 KiB scratch buffer in
-addition to the caller's payload. Splitting a write into chunks does not split
-the WebSocket message. The header shares the first chunk with the payload.
+the string's bytes unchanged as binary. `send(seq[byte], binary = true, dl)`
+sends binary by default and avoids a sequence-to-string conversion. Both send
+one frame, coalescing its header and masked payload in a reusable connection
+buffer. The buffer grows to the largest frame sent and is released on closure.
+Writes offer the whole remaining frame and retry only on partial writes or
+socket backpressure.
 
-`recv` releases consumed wire data before returning a message and retains any
-following frames for the next call. Returned payloads own their data.
+Callers supply valid UTF-8 when sending text, ping payloads of at most 125 bytes,
+and valid close codes with a UTF-8 reason of at most 123 bytes. Outgoing payloads
+are not revalidated or constrained by the receive limit.
+
+`recv` discards consumed wire bytes in place and retains following frames for
+the next call. Its buffer capacity is reused until closure. Returned payloads
+own their data.
 
 Socket calls, address layouts, OpenSSL bindings and bulk buffer operations live
 in `tsuru/internal`. The transport owns descriptors and TLS handles; the client
@@ -45,7 +51,7 @@ with `connectWebSocket`.
 `WebSocketOptions` must be constructed with `initWebSocketOptions`; an empty
 object has invalid zero limits. The library validates these fields at connect:
 
-- `maxMessage`: positive maximum received or sent message bytes.
+- `maxMessage`: positive maximum received message bytes.
 - `timeoutMs`: positive per-operation time budget.
 - `protocols`: distinct HTTP tokens; the server may select one or none.
 - `origin` and `headers`: control characters and protected fields are rejected.
@@ -78,11 +84,10 @@ An idempotent abort preserves an already recorded result.
 
 | ErrorCode | Typical cause | Connection effect |
 | --- | --- | --- |
-| `ValueError` | Invalid URL/options; bad text/close arguments | No connection created, or live connection retained |
+| `ValueError` | Invalid URL/options | No connection created |
 | `ValueError` | Rejected upgrade or malformed peer frame/text | Closed; protocol close attempted for frame errors |
-| `ContentTooLong` | Oversized outgoing message/control payload | Retained |
 | `ContentTooLong` | Oversized handshake, peer frame or fragmented message | Closed; frame/message violations attempt close 1009 |
-| `BadOperation` | Send or ping after closing | Remains closed |
+| `BadOperation` | Send or ping after closing | Unchanged |
 | `TimeoutError` | Deadline exhausted | Closed |
 | `EndOfStreamError` | Peer disappeared during HTTP upgrade | Closed |
 | `IOError` | Socket, randomness, trust-file or TLS I/O failure | Closed if a connection was created |

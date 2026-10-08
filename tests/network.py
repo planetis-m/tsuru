@@ -122,6 +122,12 @@ def fixture(sock, mode, wire=None, code=1002):
         assert op == 8
         sock.sendall(frame(8, data))
         return
+    if mode == "extended-length":
+        handshake(sock, suffix=wire)
+        op, data = read_frame(sock)
+        assert op == 8
+        sock.sendall(frame(8, data))
+        return
     if mode in ("read-timeout", "write-timeout", "close-timeout"):
         handshake(sock)
         time.sleep(0.7)
@@ -182,8 +188,9 @@ def main():
     for wire, code in [(b"\x81\x80", 1002), (frame(1, b"\xff"), 1007),
                        (frame(0, b"orphan"), 1002), (frame(8, b"x"), 1002),
                        (frame(8, struct.pack("!H", 1005)), 1002),
-                       (b"\x82\x7e\x00\x01x", 1002), (b"\xc1\x00", 1002)]:
+                       (b"\xc1\x00", 1002)]:
         run_case(binary, "protocol-error", wire=wire, code=code)
+    run_case(binary, "extended-length", wire=b"\x82\x7e\x00\x01x")
     run_case(binary, "too-large", wire=frame(2, b"12345"), code=1009)
     run_case(binary, "echo", ipv6=True)
     run_case(binary, "echo", hostname="localhost")

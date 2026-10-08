@@ -77,8 +77,8 @@ Custom headers cannot replace handshake fields or add an HTTP request body.
 | Operation | Behavior |
 | --- | --- |
 | `connectWebSocket(url, options, dl)` | TCP/TLS connection and validated HTTP upgrade |
-| `ws.send(data, binary = false, dl)` | One masked message; text must be valid UTF-8 |
-| `ws.send(bytes: seq[byte], dl)` | One binary message without converting bytes to a string |
+| `ws.send(data, binary = false, dl)` | One masked message; caller supplies valid UTF-8 for text |
+| `ws.send(bytes: seq[byte], binary = true, dl)` | Send bytes directly, binary by default |
 | `ws.recv(dl)` | Complete text/binary message or `wmClose`; answers pings automatically |
 | `ws.ping(data = "", dl)` | Ping payload of at most 125 bytes; `recv` consumes pongs |
 | `ws.close(code = 1000, reason = "", dl)` | Send close and wait up to five seconds for the peer |
@@ -89,7 +89,7 @@ Custom headers cannot replace handshake fields or add an HTTP request body.
 default. Pass `afterMs(1000)` to tighten a single operation's deadline.
 The connection budget covers DNS, TCP, TLS and HTTP together. Receive budgets
 cover the whole message, including all fragments and interleaved controls.
-Message limits default to 16 MiB and also bound assembled fragments.
+Receive limits default to 64 MiB and also bound assembled fragments.
 
 Binary sequences can be sent directly:
 
@@ -97,8 +97,9 @@ Binary sequences can be sent directly:
 ws.send(@[0'u8, 255'u8, 128'u8])
 ```
 
-Large sends use an 8 KiB masking buffer. Incoming messages release consumed
-wire data before returning their payload to the application.
+Sends coalesce the header and masked payload in a reusable connection buffer.
+Receive processing consumes wire bytes in place. Both buffers retain capacity
+for reuse and are released when the connection closes.
 
 For a connection that can be quiet for several minutes, increase
 `options.timeoutMs` to match that receive budget. The
@@ -127,8 +128,9 @@ Code `1005` means the peer omitted a status; `1006` means EOF without a close
 frame. `message.closeSource` identifies peer closure, EOF, local abort, local
 protocol failure or transport failure. Transport errors and timeouts raise
 `ErrorCode` and release the socket.
-Invalid arguments leave a live connection intact. More detail:
+Callers supply valid outgoing text and control payloads. More detail:
 [API and error contracts](doc/api.md).
+See the [Hashi comparison](doc/hashi-parity.md) for the corresponding implementation choices.
 
 ## Verify
 

@@ -1,5 +1,5 @@
 ## Test-only unmasked encoder. Network fixtures use an independent Python codec.
-import tsuru/protocol
+import tsuru/frame
 
 proc serverFrame*(op: Opcode; data: string; fin = true): string =
   result = ""

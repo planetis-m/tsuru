@@ -1,6 +1,6 @@
 ## RFC 6455 client framing: parse unmasked server frames and encode masked sends.
 
-const DefaultMaxMessage* = 16 * 1024 * 1024
+const DefaultMaxMessage* = 64 * 1024 * 1024
   ## Default limit for a frame payload or an assembled message.
 
 type
@@ -36,28 +36,50 @@ proc frameHeader*(op: Opcode; n: int; key: array[4, uint8]; fin = true): string 
       result.add char((uint64(n) shr (shift * 8)) and 255'u64)
   for b in key: result.add char(b)
 
-proc maskInto*[T: char | byte](dest: var openArray[char]; source: openArray[T];
-                              key: array[4, uint8]; offset = 0) =
-  ## Mask source into dest[0..<source.len], leaving the rest of dest untouched.
-  ## dest must be large enough; offset is the chunk's position within the payload.
-  for i in 0..<source.len:
-    dest[i] = char(ord(source[i]) xor int(key[(offset + i) and 3]))
+proc maskBytes(buf: pointer; n: int; key: array[4, uint8]) =
+  ## Mask a writable payload in place; align the word loop and finish with bytes.
+  let p = cast[ptr UncheckedArray[byte]](buf)
+  var i = 0
+  when not defined(bigEndian):
+    while i < n and (cast[uint](addr p[i]) and 7'u) != 0'u:
+      p[i] = p[i] xor key[i and 3]
+      inc i
+    if n - i >= 16:
+      let phase = i and 3
+      let m32 = uint32(key[phase]) or (uint32(key[(phase + 1) and 3]) shl 8) or
+        (uint32(key[(phase + 2) and 3]) shl 16) or (uint32(key[(phase + 3) and 3]) shl 24)
+      let m64 = uint64(m32) or (uint64(m32) shl 32)
+      let words = cast[ptr UncheckedArray[uint64]](addr p[i])
+      let count = (n - i) div 8
+      var w = 0
+      while w < count:
+        words[w] = words[w] xor m64
+        inc w
+      i += count * 8
+  while i < n:
+    p[i] = p[i] xor key[i and 3]
+    inc i
+
+proc maskPayload*(payload: var openArray[byte]; key: array[4, uint8]) =
+  ## Apply a frame's mask in place to its complete payload.
+  if payload.len > 0:
+    maskBytes(addr payload[0], payload.len, key)
 
 proc encodeFrame*(op: Opcode; data: string; key: array[4, uint8]; fin = true): string =
   ## Encode a masked client frame. Supply a fresh cryptographic key for every call.
   result = frameHeader(op, data.len, key, fin)
   let headerLen = result.len
-  var payload = toOpenArray(beginStore(result, headerLen + data.len, headerLen),
-    0, data.len - 1)
-  maskInto(toOpenArray(payload, 0, payload.len - 1), data, key)
+  let dest = beginStore(result, headerLen + data.len, headerLen)
+  if data.len > 0:
+    copyMem(dest, readRawData(data), data.len)
+    maskBytes(dest, data.len, key)
   endStore(result)
 
 proc parseFrame*(data: string; start: int; frame: var Frame;
                  maxPayload = DefaultMaxMessage): ParseResult =
   ## Parse one unmasked server frame. Check lengths before allocation and indexing.
+  ## The caller supplies 0 <= start <= data.len and a nonnegative maxPayload.
   result = ParseResult(status: psIncomplete)
-  if start < 0 or start > data.len or maxPayload < 0:
-    return ParseResult(status: psError)
   let avail = data.len - start
   if avail < 2: return
   let b0 = ord(data[start])
@@ -75,8 +97,7 @@ proc parseFrame*(data: string; start: int; frame: var Frame;
     if avail < head: return
     size = 0'u64
     for i in 0..<bytes: size = (size shl 8) or uint64(ord(data[start + 2 + i]))
-    if (bytes == 2 and size < 126) or (bytes == 8 and size < 65536) or
-        (size shr 63) != 0:
+    if (size shr 63) != 0:
       return ParseResult(status: psError)
   if op >= 8 and size > 125: return ParseResult(status: psError)
   if size > uint64(maxPayload): return ParseResult(status: psTooLarge)

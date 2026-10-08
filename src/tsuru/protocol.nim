@@ -1,6 +1,5 @@
 ## WebSocket message assembly, UTF-8 and close handling, independent of I/O.
 import ./frame
-export frame
 
 type
   ActionKind* = enum
@@ -80,12 +79,13 @@ proc handleFrame*(s: var MessageState; f: Frame;
                   maxMessage = DefaultMaxMessage): Action =
   ## Assemble messages, validate text and closes, and handle interleaved control frames.
   ## Pass frames accepted by parseFrame; wire-level invariants belong to the parser.
+  ## maxMessage is nonnegative.
   case f.opcode
   of opPing: result = Action(kind: akPong, data: f.payload)
   of opPong: result = Action(kind: akNone)
   of opClose: result = handleClose(f)
   of opText, opBinary, opContinuation:
-    if maxMessage < 0 or f.payload.len > maxMessage: return failure(1009)
+    if f.payload.len > maxMessage: return failure(1009)
     if f.opcode == opContinuation:
       if not s.fragmented: return failure(1002)
       if s.data.len > maxMessage - f.payload.len: return failure(1009)

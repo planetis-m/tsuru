@@ -2,9 +2,9 @@
 ##
 ## Own each connection from one task. recv automatically answers ping frames and
 ## assembles fragmented messages. Transport errors and timeouts close the socket
-## and raise ErrorCode; argument validation errors leave the connection intact.
+## and raise ErrorCode. Callers supply valid outgoing text and control payloads.
 import std/[ioring, base64, strutils]
-import tsuru/[protocol, handshake]
+import tsuru/[frame, protocol, handshake]
 import tsuru/internal/[transport, entropy, buffer]
 export handshake.Header, handshake.WebSocketOptions, handshake.initWebSocketOptions
 export ioring.Deadline, ioring.never, ioring.afterMs
@@ -36,6 +36,8 @@ type
     status: WebSocketState
     selectedProtocol: string
     buffer: string
+    readBuffer: array[4096, byte]
+    sendBuffer: seq[byte]
     fragments: MessageState
     closure: CloseInfo
 
@@ -55,6 +57,7 @@ proc release(ws: WebSocket) =
   close(ws.transport)
   ws.status = wsClosed
   ws.buffer = ""
+  ws.sendBuffer = @[]
   ws.fragments = MessageState()
 
 proc terminate(ws: WebSocket; source: CloseSource; code = 1006; reason = "") =
@@ -79,34 +82,46 @@ proc budget(ws: WebSocket; dl: Deadline): Deadline =
   earlier(afterMs(ws.timeoutMs), dl)
 
 proc fill(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
-  var buf = default(array[8192, char])
-  let n = readSome(ws.transport, buf, dl)
-  appendBytes(ws.buffer, toOpenArray(buf, 0, n - 1))
+  let n = readSome(ws.transport, ws.readBuffer, dl)
+  appendBytes(ws.buffer, toOpenArray(ws.readBuffer, 0, n - 1))
   result = n > 0
 
-proc fillMaskedChunk[T: char | byte](buf: var openArray[char]; data: openArray[T];
-                                    key: array[4, uint8]; offset, prefix: int): int =
-  ## Fill the payload portion of a chunk, preserving the frame's mask position.
-  let count = min(buf.len - prefix, data.len - offset)
-  maskInto(toOpenArray(buf, prefix, prefix + count - 1),
-    toOpenArray(data, offset, offset + count - 1), key, offset)
-  result = count
+proc fillSendBuf(ws: WebSocket; op: Opcode; data: string; key: array[4, uint8]): int =
+  ## Coalesce the header and masked payload in the connection's reusable buffer.
+  let head = frameHeader(op, data.len, key)
+  let total = head.len + data.len
+  if ws.sendBuffer.len < total:
+    ws.sendBuffer.setLen(total)
+  copyOut(toOpenArray(ws.sendBuffer, 0, head.len - 1), head)
+  copyOut(toOpenArray(ws.sendBuffer, head.len, total - 1), data)
+  maskPayload(toOpenArray(ws.sendBuffer, head.len, total - 1), key)
+  result = total
 
-proc emit[T: char | byte](ws: WebSocket; op: Opcode; data: openArray[T]; dl: Deadline)
-    {.passive, raises.} =
+proc fillSendBuf(ws: WebSocket; op: Opcode; data: openArray[byte];
+                 key: array[4, uint8]): int =
+  let head = frameHeader(op, data.len, key)
+  let total = head.len + data.len
+  if ws.sendBuffer.len < total:
+    ws.sendBuffer.setLen(total)
+  copyOut(toOpenArray(ws.sendBuffer, 0, head.len - 1), head)
+  if data.len > 0:
+    copyMem(addr ws.sendBuffer[head.len], addr data[0], data.len)
+  maskPayload(toOpenArray(ws.sendBuffer, head.len, total - 1), key)
+  result = total
+
+proc emit(ws: WebSocket; op: Opcode; data: string; dl: Deadline) {.passive, raises.} =
   checkDeadline(dl)
   var key = default(array[4, uint8])
   fillRandom(key)
-  let head = frameHeader(op, data.len, key)
-  var buf = default(array[8192, char])
-  copyOut(toOpenArray(buf, 0, head.len - 1), head)
-  var prefix = head.len
-  var off = 0
-  while prefix > 0 or off < data.len:
-    let count = fillMaskedChunk(buf, data, key, off, prefix)
-    writeAll(ws.transport, toOpenArray(buf, 0, prefix + count - 1), dl)
-    off += count
-    prefix = 0
+  let total = fillSendBuf(ws, op, data, key)
+  writeAll(ws.transport, toOpenArray(ws.sendBuffer, 0, total - 1), dl)
+
+proc emit(ws: WebSocket; op: Opcode; data: seq[byte]; dl: Deadline) {.passive, raises.} =
+  checkDeadline(dl)
+  var key = default(array[4, uint8])
+  fillRandom(key)
+  let total = fillSendBuf(ws, op, data, key)
+  writeAll(ws.transport, toOpenArray(ws.sendBuffer, 0, total - 1), dl)
 
 proc prepareHandshake(url: string; options: WebSocketOptions; endpoint: var Endpoint;
                       key, request: var string) {.raises.} =
@@ -149,24 +164,21 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
     raise e
 
 proc send*(ws: WebSocket; data: string; binary = false; dl = never) {.passive, raises.} =
-  ## Send one complete masked text/binary message. Text must be valid UTF-8.
+  ## Send one masked message. The caller supplies valid UTF-8 for text messages.
   if ws.status != wsOpen: raise BadOperation
   let deadline = budget(ws, dl)
-  if data.len > ws.maxMessage: raise ContentTooLong
-  if not binary and not validUtf8(data): raise ValueError
   try:
     emit(ws, (if binary: opBinary else: opText), data, deadline)
   except ErrorCode as e:
     transportFailed(ws)
     raise e
 
-proc send*(ws: WebSocket; data: seq[byte]; dl = never) {.passive, raises.} =
-  ## Send one complete masked binary message without converting bytes to a string.
+proc send*(ws: WebSocket; data: seq[byte]; binary = true; dl = never) {.passive, raises.} =
+  ## Send bytes without converting to a string; binary by default, text if requested.
   if ws.status != wsOpen: raise BadOperation
   let deadline = budget(ws, dl)
-  if data.len > ws.maxMessage: raise ContentTooLong
   try:
-    emit(ws, opBinary, data, deadline)
+    emit(ws, (if binary: opBinary else: opText), data, deadline)
   except ErrorCode as e:
     transportFailed(ws)
     raise e
@@ -175,7 +187,6 @@ proc ping*(ws: WebSocket; data = ""; dl = never) {.passive, raises.} =
   ## Send a ping of at most 125 bytes. recv consumes pong replies.
   if ws.status != wsOpen: raise BadOperation
   let deadline = budget(ws, dl)
-  if data.len > 125: raise ContentTooLong
   try:
     emit(ws, opPing, data, deadline)
   except ErrorCode as e:
@@ -233,7 +244,6 @@ proc close*(ws: WebSocket; code = 1000; reason = ""; dl = never) {.passive, rais
   ## Idempotent once closed; abort releases the socket without waiting.
   if ws.status == wsClosed: return
   let deadline = earlier(budget(ws, dl), afterMs(5000))
-  if not validCloseCode(code) or reason.len > 123 or not validUtf8(reason): raise ValueError
   try:
     if ws.status == wsOpen:
       emit(ws, opClose, closeBody(code, reason), deadline)
