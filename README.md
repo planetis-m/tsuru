@@ -12,6 +12,11 @@ Requires Linux, Nimony **0.6.3** and a C compiler.
 Add a relative path to `tsuru/src` to your project's `nimony.paths`, or compile
 with `--path:/path/to/tsuru/src`.
 
+The package root is a facade: `import tsuru` re-exports both clients, including
+their shared `Header`, `HttpResponse` and `Deadline` types. Prefer
+`import tsuru/websocket` or `import tsuru/httpclient` when a module uses one
+protocol.
+
 Compile with `-d:tsuruTls` for `wss://` and `https://`. TLS requires OpenSSL
 headers and libraries: `openssl-devel` on Fedora or `libssl-dev` on Debian/Ubuntu.
 
@@ -19,7 +24,7 @@ headers and libraries: `openssl-devel` on Fedora or `libssl-dev` on Debian/Ubunt
 
 ```nim
 import std/[opt, syncio]
-import tsuru
+import tsuru/websocket
 
 proc chat() {.passive, raises.} =
   let ws = connectWebSocket("ws://127.0.0.1:8080/")

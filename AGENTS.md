@@ -18,17 +18,20 @@ inherit that instant and may tighten it, never renew it.
 
 | Module | Responsibility |
 | --- | --- |
-| `tsuru` | WebSocket connection state and passive operations |
-| `frame` | Wire codec and masking |
-| `protocol` | Message assembly, UTF-8 and close decisions |
-| `handshake` | Opening requests and HTTP upgrade validation |
-| `http` | Pure HTTP heads and request serialization |
-| `httpclient` | Request deadlines, keep-alive and body sequencing |
-| `internal/endpoint` | Shared URL parsing |
-| `internal/net`, `internal/tls` | Socket and OpenSSL declarations |
-| `internal/transport` | Resources and passive I/O |
-| `internal/buffer` | Bulk string operations |
+| `tsuru` | Public facade re-exporting both clients |
+| `tsuru/websocket` | WebSocket connection state and passive operations |
+| `tsuru/frame` | Wire codec and masking |
+| `tsuru/protocol` | Message assembly, UTF-8 and close decisions |
+| `tsuru/handshake` | Opening requests and HTTP upgrade validation |
+| `tsuru/http` | Pure HTTP heads and request serialization |
+| `tsuru/httpclient` | Request deadlines, keep-alive and body sequencing |
+| `tsuru/internal/endpoint` | Shared URL parsing |
+| `tsuru/internal/net`, `tsuru/internal/tls` | Socket and OpenSSL declarations |
+| `tsuru/internal/transport` | Resources and passive I/O |
+| `tsuru/internal/buffer` | Bulk string operations |
 
+Import `tsuru/websocket` or `tsuru/httpclient` explicitly; `import tsuru` is a
+facade that only re-exports both clients and their shared types.
 Keep pure protocol decisions independent of socket operations. Source comments
 describe current contracts and invariants.
 

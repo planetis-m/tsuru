@@ -1,6 +1,6 @@
 ## Round trip a message against a WebSocket echo server.
 import std/[cmdline, syncio, threadpool, ioring, atomics, opt]
-import tsuru
+import tsuru/websocket
 
 var done: int
 var failed: int

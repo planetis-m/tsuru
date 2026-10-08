@@ -1,8 +1,10 @@
 # HTTP client
 
-Import `tsuru/httpclient`. Each client belongs to one passive task and handles
-one request at a time. Finish the response body before requesting again, or
-close immediately. See [runtime](runtime.md) for scheduling, TLS and ownership.
+Import `tsuru/httpclient`. The `tsuru` package root is a facade re-exporting
+this module together with `tsuru/websocket`. Each client belongs to one passive
+task and handles one request at a time. Finish the response body before
+requesting again, or close immediately. See [runtime](runtime.md) for
+scheduling, TLS and ownership.
 
 ## Connect and request
 

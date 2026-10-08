@@ -28,7 +28,8 @@ copies bytes into caller-owned storage.
 
 ## Deadlines
 
-Both client modules export `Deadline`, `afterMs` and `never`.
+Both client modules, `tsuru/websocket` and `tsuru/httpclient`, export
+`Deadline`, `afterMs` and `never`; the `tsuru` facade re-exports both modules.
 A deadline is an absolute monotonic instant; `afterMs(1000)` creates one a
 second from now. Compute the deadline once to bound several operations together.
 

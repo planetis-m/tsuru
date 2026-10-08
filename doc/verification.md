@@ -28,13 +28,17 @@ Linux x86-64, Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 | Danger, TLS | Unit/fuzz and 73 network fixtures passed |
 
 The wire fixtures use independent Python encoders and decoders. Unit tests
-cover pure codecs and HTTP heads. A seeded test supplies 100,000 malformed
+cover pure codecs and HTTP heads. A facade test imports both clients together
+with `tsuru` and checks shared header and deadline identities plus overloaded
+operations. A seeded test supplies 100,000 malformed
 inputs to the frame, UTF-8, URL and WebSocket upgrade parsers per run.
 Test assertions and peer-protocol checks remain active in danger builds.
 
 ## WebSocket coverage
 
 The WebSocket runner has 33 TCP fixtures and nine additional TLS fixtures.
+It imports the `tsuru` facade, while the HTTP runner and the examples use
+explicit `tsuru/websocket` and `tsuru/httpclient` imports.
 Coverage includes empty and extended-length payloads, binary sequences, masking,
 fragmented UTF-8, bytewise delivery, subprotocols, custom headers, malformed
 frames/text, message limits, close outcomes, DNS and IPv6 literals.

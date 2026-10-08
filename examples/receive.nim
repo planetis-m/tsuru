@@ -1,7 +1,7 @@
 ## Receive messages until the peer closes. Configure optional authentication,
 ## subprotocol and CA trust with TSURU_TOKEN, TSURU_PROTOCOL and TSURU_CA_FILE.
 import std/[cmdline, envvars, syncio, threadpool, ioring, atomics, opt]
-import tsuru
+import tsuru/websocket
 
 var done: int
 var failed: int

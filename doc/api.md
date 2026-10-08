@@ -1,8 +1,9 @@
 # WebSocket client
 
-Import `tsuru` for the client and `std/opt` to match receive results.
-Use one owning passive task for each connection. See [runtime](runtime.md)
-for scheduling, TLS and connection ownership.
+Import `tsuru/websocket` for the client and `std/opt` to match receive results.
+The `tsuru` package root is a facade re-exporting this module together with
+`tsuru/httpclient`. Use one owning passive task for each connection.
+See [runtime](runtime.md) for scheduling, TLS and connection ownership.
 
 ## Operations
 
