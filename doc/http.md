@@ -1,12 +1,13 @@
 # HTTP client
 
 Import `tsuru/httpclient`. Each client belongs to one passive task and handles
-one HTTP/1.1 request at a time. Complete the response body before the next
-request, or close immediately. The final reference releases the transport;
-explicit close gives deterministic cleanup. Start the owning task using
-`submit(delay(task(...)))`.
+one request at a time. Finish the response body before requesting again, or
+close immediately. See [runtime](runtime.md) for scheduling, TLS and ownership.
+
+## Connect and request
 
 ```nim
+import std/syncio
 import tsuru/httpclient
 
 proc fetch() {.passive, raises.} =
@@ -14,84 +15,126 @@ proc fetch() {.passive, raises.} =
   let c = connectHttp("https://example.com/data", deadline)
   defer: c.close()
   let response = c.request(deadline)
-  let body = c.readAll()
-  discard response.status
-  discard body
+  echo response.status
+  echo c.readAll()
 ```
 
-The complete [HTTP example](../examples/http_get.nim) supplies scheduler startup
-and error handling. HTTPS requires `-d:tsuruTls` and uses the shared verified
-transport; `HttpOptions.caFile` supplies custom CA trust.
+The [complete example](../examples/http_get.nim) includes scheduler startup
+and error handling.
 
 | Operation | Contract |
 | --- | --- |
-| `connectHttp(url, dl, options)` | Connect TCP/TLS under an explicit absolute deadline |
-| `request(dl, meth = "GET", target = "", body = "", headers = @[])` | Send the complete request and return its final response head |
-| `readBody(dest, dl = never)` | Copy body bytes into caller-owned character storage; zero means completion for nonempty storage |
-| `readAll(dl = never)` | Collect the current body in an owned string |
-| `close()` | Release immediately, including an unread body; idempotent |
-| `open` | Whether the connection is live; never suspends |
+| `connectHttp(url, dl, options = initHttpOptions())` | Connect TCP/TLS under an explicit deadline |
+| `c.request(dl, meth = "GET", target = "", body = "", headers = @[])` | Send the complete request and return its final `HttpResponse` head |
+| `c.readBody(dest, dl = never)` | Copy body bytes into caller-owned character storage |
+| `c.readAll(dl = never)` | Collect the current body in an owned string |
+| `c.close()` | Immediate, idempotent release, including an unread response |
+| `c.open` | Whether the connection is live; never suspends |
+
+Network operations are passive and raise `ErrorCode` on failure.
+Close never suspends.
+
+`initHttpOptions(maxBody = 64 * 1024 * 1024)` sets the response payload limit.
+`options.caFile` selects a custom PEM trust file; `""` uses system trust.
+HTTPS requires `-d:tsuruTls`.
+
+## Request targets and headers
 
 An empty target uses the URL's encoded path/query. Other targets are encoded
-origin-form paths, or `*`. Request bodies are strings of arbitrary bytes and
-are written without a second body buffer. The client generates Host,
-Content-Length and a default `Accept-Encoding: identity`. Caller headers cannot
-replace Host, Connection, framing, Upgrade or Expect fields.
+origin-form paths beginning with `/`, or `*`. Request bodies are strings of
+arbitrary bytes, written without a second body buffer.
 
-`HttpResponse` carries status and owned header records. Names are lowercased
-once, values remain strings, and duplicate fields stay in wire order.
-`response.header(name, default)` returns the first value; iterate headers for
-fields such as Set-Cookie. Status codes including 4xx/5xx are ordinary responses;
-redirect responses are returned for the caller to act on.
-With the default fallback `""`, a missing field and an empty value both return
-`""`. Iterate the header records when that distinction matters; repeated fields
-also remain available there.
+```nim
+let response = c.request(deadline, meth = "POST", target = "/jobs",
+  body = payload, headers = @[
+    Header(name: "Content-Type", value: "application/json"),
+    Header(name: "Authorization", value: "Bearer token")])
+```
 
-Response framing follows [RFC 9112 §6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3):
-HEAD, informational, 204 and 304 responses have no body; other responses use a
-content length, chunks or EOF. Informational heads are consumed before the final
-response. Chunk extensions and trailers are consumed without changing response
-headers. Ambiguous framing is rejected. HTTP/1.1 connections are reused after
-complete bodies; HTTP/1.0 requires keep-alive. Connection: close and EOF bodies
-release on completion.
+The client generates Host, Content-Length and a default
+`Accept-Encoding: identity`. Caller headers cannot replace Host, Connection,
+Content-Length, Transfer-Encoding, Upgrade or Expect. Header names must be HTTP
+tokens; values reject control characters except tabs.
 
-`initHttpOptions` defaults to a 64 MiB response payload limit, enforced for both
-streaming and collected bodies. Configure a larger limit for large downloads.
-Streaming uses a small reusable read buffer, compacted at fill boundaries;
-heads use the stdlib's 16 KiB limit. `tsuru/http` owns pure head decisions,
-`httpclient` owns body sequencing, and the transport owns TCP/TLS and partial I/O.
+## Response headers
 
-One request deadline covers preparation, writes, informational responses, head
-and every body read. Body calls can only tighten that stored instant via
-`earlier`; a later deadline cannot renew it. Setup takes its own explicit
-deadline. Pass the same instant to connect and request to bound them together.
-Passing `never` explicitly chooses an unbounded operation.
-`HttpOptions` contains limits and TLS settings; it has no relative timeout.
-The caller computes the budget for each exchange. WebSocket's configured
-operation timeout supplies a default for repeated stream operations, while an
-explicit deadline can tighten each wait.
+`HttpResponse` carries `status` and `headers: seq[Header]`.
+Names are lowercase, values remain strings, and duplicate fields stay in wire
+order. HTTP status codes, including 4xx/5xx, are ordinary responses.
 
-HTTP failures raise ErrorCode: incomplete messages use EndOfStreamError,
-malformed framing SyntaxError, limits ContentTooLong and expiry TimeoutError.
-Socket/TLS failures use IOError; an abrupt TLS shutdown is a transport failure.
-Exchange failures release the connection. Invalid caller inputs and requesting
-before consuming the prior body are rejected before I/O, leaving it usable.
+`response.header(name, default = "")` returns the first matching value.
+With the default fallback, missing and empty values both return `""`.
+Iterate the records when presence or repeated values such as Set-Cookie matter.
 
-A server may close an idle keep-alive connection between requests. A failed
-request releases that connection and raises; the client never reconnects or
-replays automatically, including for idempotent methods. An error does not prove
-the server received nothing. The caller decides whether to reconnect and retry,
-using the original deadline to keep the total attempt budget bounded.
+## Response bodies
 
-WebSocket receive expiry remains `None` with state preserved; a command's
-deadline does not end its message stream. HTTP expiry ends the active exchange.
-HTTP exchange errors deliberately raise at the caller's request boundary;
-WebSocket live operations return write outcomes and stream termination values.
-The transport makes direct nonblocking calls and parks only on readiness, so
-expiry leaves no kernel read holding caller storage. Scheduling and cancellation
-remain in `std/ioring`.
+`readBody` returns the number of bytes copied. With nonempty storage, zero
+means completion. Empty storage is a no-op. Body bytes retain their content
+coding; decompression belongs to the caller.
 
-Body bytes retain their content coding; decompression belongs to the caller.
-HTTP/2, CONNECT tunnels, protocol upgrades and transfer codings other than
-chunked are unsupported. One task chooses when to create or release its
-connection; there are no automatic retries or connection pools.
+```nim
+proc consumeBody(c: HttpClient) {.passive, raises.} =
+  var chunk = default(array[8192, char])
+  var total = 0
+  while true:
+    let n = c.readBody(chunk)
+    if n == 0: break
+    total += n
+  echo "Received ", total, " bytes"
+```
+
+Use `readAll` for a collected string and `readBody` for bounded-memory
+streaming. Both enforce `maxBody`, which defaults to 64 MiB.
+Response heads are limited to 16 KiB.
+
+HEAD, informational, 204 and 304 responses have no body. Other responses use
+Content-Length, chunked framing or EOF. Informational heads are consumed before
+the final response. Chunk extensions and trailers are consumed without changing
+response headers. Ambiguous framing is rejected.
+
+## Keep-alive and retries
+
+HTTP/1.1 connections can be reused after a complete body; HTTP/1.0 requires
+keep-alive. Connection: close and EOF bodies release on completion.
+
+A server may close an idle connection between requests. A failed exchange
+releases the connection and raises. Requests are not retried automatically.
+Failure may occur after request bytes reached the peer; the caller decides
+whether to reconnect and retry.
+
+## Deadlines
+
+Connect and request require explicit absolute deadlines. Pass the same instant
+to both to bound setup and the exchange together.
+
+One request deadline covers preparation, writes, informational heads, the final
+head and every body read. Body calls can tighten it with `dl`; a later deadline
+cannot renew it. Pass `never` explicitly for an unbounded operation.
+Reuse the original deadline across retry attempts to keep their total budget
+bounded.
+
+## Errors
+
+All failures during an exchange release the connection. Invalid caller inputs
+and requests made before consuming the previous body are rejected before I/O;
+the connection remains usable.
+
+| ErrorCode | Typical cause |
+| --- | --- |
+| `TimeoutError` | Setup or exchange deadline expired |
+| `EndOfStreamError` | Incomplete response or request on a closed handle |
+| `SyntaxError` | Malformed or ambiguous response framing |
+| `ContentTooLong` | Response payload or head exceeds its limit |
+| `ValueError` | Invalid URL/options/request fields, or an unfinished prior body |
+| `IOError` | Socket or TLS I/O failure, including abrupt TLS shutdown |
+| `PermissionDenied` | TLS negotiation or certificate verification rejected |
+| `NameNotFound` | DNS name not found |
+| `UnimplementedOperation` | Unsupported secure transport, transfer coding, upgrade or tunnel |
+
+Redirects are returned for the caller to handle. HTTP/2, CONNECT tunnels,
+protocol upgrades, transfer codings other than chunked, automatic decompression
+and connection pools are unsupported.
+
+`tsuru/http` provides pure head parsing, request serialization and the response
+record types. Response framing follows
+[RFC 9112 §6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3).

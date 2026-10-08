@@ -1,54 +1,71 @@
 # Working on Tsuru
 
+## Language and contracts
+
 This is a Nimony library. Read installed stdlib declarations before using them.
-Connection setup raises `ErrorCode`; live sends return bool and close returns a
-terminal `Message`. Receive returns `Opt[Message]`: `None` on expiry without
-closing or losing partial state, `Some(wmClose)` on termination.
-Scheduling and I/O use `.passive`.
+Read [runtime](doc/runtime.md), [WebSocket](doc/api.md) and [HTTP](doc/http.md)
+for public contracts.
+
+WebSocket setup raises ErrorCode. Live sends return bool, receive returns
+Opt[Message], and close returns a terminal Message. Receive expiry preserves
+the connection and partial state.
+
 HTTP operations raise ErrorCode; failures during an exchange release the
-connection. connectHttp and request take explicit absolute deadlines. Body
-reads inherit the request deadline and can tighten it, never renew it.
+connection. Connect and request take explicit absolute deadlines. Body reads
+inherit that instant and may tighten it, never renew it.
+
+## Module ownership
+
+| Module | Responsibility |
+| --- | --- |
+| `tsuru` | WebSocket connection state and passive operations |
+| `frame` | Wire codec and masking |
+| `protocol` | Message assembly, UTF-8 and close decisions |
+| `handshake` | Opening requests and HTTP upgrade validation |
+| `http` | Pure HTTP heads and request serialization |
+| `httpclient` | Request deadlines, keep-alive and body sequencing |
+| `internal/endpoint` | Shared URL parsing |
+| `internal/net`, `internal/tls` | Socket and OpenSSL declarations |
+| `internal/transport` | Resources and passive I/O |
+| `internal/buffer` | Bulk string operations |
+
+Keep pure protocol decisions independent of socket operations. Source comments
+describe current contracts and invariants.
+
+## Ownership and I/O
+
+Each connection belongs to one task. Do not introduce concurrent access to an
+OpenSSL session or bypass certificate verification. The transport is move-only;
+public connections are reference handles. Custom ownership hooks belong only
+on resources the compiler cannot release.
+
+Start parking call chains with `submit(delay(task(...)))`; every caller in the
+chain must be passive. Scheduler entry points take owned values. Borrowed
+parameters may span a normal passive call. The application owns pool shutdown.
+
+Use strings for owned wire buffers and payloads, and byte sequences when they
+avoid caller conversions. Use openArray views for byte operations and
+beginStore/endStore for writable strings. Keep raw pointers at FFI and bulk-store
+boundaries.
+
+Check peer lengths before allocating or indexing. Trust outgoing payloads and
+document their preconditions. Validate incoming framing, text and upgrade
+responses. Every outgoing WebSocket frame needs a fresh random mask.
+
+Preserve one absolute deadline across fragments, controls and partial writes.
+Keep pending control bytes and their cursor intact across receive expiry;
+finish them before encoding another frame. Application write failure releases
+the connection. WebSocket close discards messages while awaiting the peer under
+its 250 ms cap; abort releases immediately.
+
+Keep connection state private and retained-memory costs explicit in API docs.
+
+## Checks
 
 Build and check with `tests/run --network`. Test TLS changes with
 `tests/run --tls --network` and resource/I/O changes with
 `tests/run --tls --asan --network`. Release and danger configurations must keep
-the protocol checks active. The small testkit checks remain enabled in danger.
+protocol checks active; testkit assertions remain enabled in danger.
 
-Keep pure framing/handshake decisions independent of socket operations. Check
-peer lengths and indexes before allocating or indexing. Preserve one absolute
-deadline across every operation's fragments, control frames and partial writes.
-Close completes the handshake within 250 ms and releases on every outcome.
-Close discards messages under the same short bound. Abort releases immediately.
-Each connection belongs to one task. Do not introduce concurrent access to an
-OpenSSL session or bypass certificate verification.
-
-Custom ownership hooks belong only on resources the compiler cannot release;
-the transport is move-only and the public connection is a reference handle.
-Never shut down the application's shared worker pool from library code.
-
-`frame` owns the wire codec; `protocol` owns message assembly and protocol
-decisions. `handshake` owns HTTP upgrade decisions.
-`http` owns pure heads; `httpclient` owns
-request deadlines, keep-alive and body framing. Shared authorities and targets
-belong in `internal/endpoint`.
-Socket and OpenSSL declarations belong in `internal/net` and `internal/tls`; `transport`
-owns resources and passive I/O. Keep bulk string operations in `internal/buffer`.
-Use `openArray` views for byte operations and `beginStore`/`endStore` for writable
-string storage. Keep raw pointers at the FFI and bulk-store boundaries.
-Borrowed parameters may span a normal passive call; scheduler entry points must
-take owned values. Start parking call chains with `submit(delay(task(...)))`;
-every caller in that chain must be passive. Source comments describe current
-contracts and invariants.
-
-Keep connection state private to the client. Use strings for owned wire buffers
-and message payloads; accept byte sequences when that avoids a caller conversion.
-Offer coalesced frames to the transport and handle partial writes there. Keep
-pending control output and its cursor intact across receive expiry; finish it
-before encoding another outgoing frame. Application send failures release the
-connection because a partial message cannot be retried safely.
-Keep buffer reuse and retained-memory costs explicit in the API docs. Trust outgoing
-application payloads and document their preconditions. Validate peer framing,
-text and upgrade responses. Every outgoing frame needs a fresh random mask.
-
-Use tests/hashi.py --compat for optional integration checks against the sibling
-server. The runner uses a temporary copy; do not change the server checkout.
+Use `tests/hashi.py --compat` for optional integration against the sibling
+server. It uses a temporary copy; do not change that checkout.
