@@ -1,6 +1,6 @@
 ## URI parsing and HTTP upgrade validation for the client opening handshake.
-import std/strutils
-import tsuru/protocol
+import std/[strutils, sha1, base64]
+from tsuru/protocol import DefaultMaxMessage
 
 const MaxHandshake* = 16 * 1024
 
@@ -27,7 +27,14 @@ proc initWebSocketOptions*(maxMessage: Positive = DefaultMaxMessage;
   ## Default to a 16 MiB message limit and a 30 second operation budget.
   WebSocketOptions(maxMessage: maxMessage, timeoutMs: timeoutMs)
 
-proc validToken*(s: string): bool =
+proc acceptKey*(key: string): string =
+  ## Expected Sec-WebSocket-Accept for a client nonce.
+  var ctx = newSha1State()
+  ctx.update(key)
+  ctx.update("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+  result = encode(ctx.finalize())
+
+proc validToken(s: string): bool =
   result = s.len > 0
   for c in s:
     if c notin {'a'..'z', 'A'..'Z', '0'..'9', '!', '#', '$', '%', '&', '\'', '*',
@@ -108,7 +115,7 @@ proc validateOptions*(options: WebSocketOptions) {.raises.} =
       raise ValueError
 
 proc buildRequest*(e: Endpoint; key: string; options: WebSocketOptions): string {.raises.} =
-  ## Build a bounded HTTP/1.1 request from validated fields.
+  ## Build a bounded HTTP/1.1 request. Pass a parseEndpoint result and a base64 nonce.
   validateOptions(options)
   result = "GET " & e.target & " HTTP/1.1\r\nHost: " & e.authority &
     "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" &

@@ -1,8 +1,6 @@
 # Verification
 
-Local verification on 2026-10-08 used the installed Nimony 0.6.3 C backend,
-Linux x86-64, GCC, Python 3.14, and system OpenSSL. This repository has no
-runtime dependency on Hashi.
+Tested on Linux x86-64 with Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 
 | Configuration | Result |
 | --- | --- |
@@ -37,36 +35,13 @@ The Autobahn client-role conformance suite has not been run.
 
 ## Hashi interoperability
 
-The unmodified sibling Hashi does not build with the installed compiler:
-Nimony now rejects accesses to several unsynchronized configuration globals
-and Hashi's direct imported `errno` variable. Its CI pins a different compiler
-commit, `1f232868e254eaefbbd825f86ffc97572da65416`.
-
-`python3 tests/hashi.py --compat` successfully runs empty, small and large text
-messages, binary bytes, ping/pong and a close handshake against its echo server.
-It makes these compiler adaptations in a **temporary copy**:
+Run `python3 tests/hashi.py --compat` to test text, binary, ping/pong and close
+against Hashi's echo server. The runner adapts a temporary source copy:
 
 - Add `{.feature: "assumeSync".}` to copied Hashi modules, accepting their
   existing synchronization assumptions for this interoperability test.
 - Replace the imported `errno` variable with `std/posix/posix.errno()`.
 
-Hashi's source checkout is untouched. This validates client/server wire
-interoperability; it does not validate Hashi's concurrency or port it to the
-new compiler. To test its original sources, supply a compatible server compiler
-via `HASHI_NIMONY` and omit `--compat`. Port 8080 must be available.
-
-## Compiler observations
-
-Nimony 0.6.3 misgenerated C for non-passive raising functions returning values
-when called directly inside this client's passive procedures. The client uses
-small synchronous helpers with output parameters for those boundaries.
-Nimony also dropped a raise nested inside `when` in a passive procedure;
-TLS availability is now checked by a synchronous helper.
-
-A bound error variable in the outer catch of the synchronous handshake test
-produced an undeclared C variable in release mode; that catch reports a fixed
-failure message instead. The passive application example still reports errors.
-
-Builds emit an integer-to-pointer cast warning from Nimony's own generated
-I/O backend C. The tested operations complete successfully; no sanitizer
-diagnostics were emitted in the verified network runs.
+The test covers wire interoperability, not Hashi's concurrency. To test the
+original sources, set `HASHI_NIMONY` to a compatible compiler and omit `--compat`.
+Port 8080 must be available.

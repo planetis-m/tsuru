@@ -1,5 +1,4 @@
 ## RFC 6455 framing and client protocol decisions, independent of socket I/O.
-import std/[sha1, base64]
 
 const DefaultMaxMessage* = 16 * 1024 * 1024
 
@@ -26,13 +25,6 @@ type
     fragmented: bool
     binary: bool
     data: string
-
-proc acceptKey*(key: string): string =
-  ## Expected Sec-WebSocket-Accept for a client nonce.
-  var ctx = newSha1State()
-  ctx.update(key)
-  ctx.update("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
-  result = encode(ctx.finalize())
 
 proc validUtf8*(s: string): bool =
   ## Strict RFC 3629 validation, including overlong and surrogate exclusions.
@@ -73,10 +65,10 @@ proc closeBody*(code: int; reason = ""): string =
   result.add char(code and 255)
   result.add reason
 
-proc header(op: Opcode; n: int; fin, masked: bool): string =
+proc header(op: Opcode; n: int; fin: bool): string =
   result = ""
   result.add char(ord(op) or (if fin: 128 else: 0))
-  let maskBit = if masked: 128 else: 0
+  let maskBit = 128
   if n < 126: result.add char(n or maskBit)
   elif n <= 65535:
     result.add char(126 or maskBit)
@@ -89,14 +81,13 @@ proc header(op: Opcode; n: int; fin, masked: bool): string =
 
 proc encodeFrame*(op: Opcode; data: string; key: array[4, uint8]; fin = true): string =
   ## Encode a masked client frame. Supply a fresh cryptographic key for every call.
-  result = header(op, data.len, fin, true)
-  for b in key: result.add char(b)
-  for i in 0..<data.len: result.add char(ord(data[i]) xor int(key[i and 3]))
-
-proc serverFrame*(op: Opcode; data: string; fin = true): string =
-  ## Unmasked frame encoder for deterministic protocol fixtures.
-  result = header(op, data.len, fin, false)
-  result.add data
+  result = header(op, data.len, fin)
+  let headerLen = result.len
+  let dest = beginStore(result, headerLen + 4 + data.len, headerLen)
+  for i in 0..3: dest[i] = char(key[i])
+  let source = readRawData(data)
+  for i in 0..<data.len: dest[i + 4] = char(ord(source[i]) xor int(key[i and 3]))
+  endStore(result)
 
 proc parseFrame*(data: string; start: int; frame: var Frame;
                  maxPayload = DefaultMaxMessage): ParseResult =
@@ -146,6 +137,7 @@ proc failure(code: int): Action =
 proc handleFrame*(s: var MessageState; f: Frame;
                   maxMessage = DefaultMaxMessage): Action =
   ## Assemble messages, validate text and closes, and handle interleaved control frames.
+  ## Pass frames accepted by parseFrame; wire-level invariants belong to the parser.
   case f.opcode
   of opPing: result = Action(kind: akPong, data: f.payload)
   of opPong: result = Action(kind: akNone)

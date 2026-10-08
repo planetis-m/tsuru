@@ -1,5 +1,5 @@
 import testkit
-import tsuru/[handshake, protocol]
+import tsuru/handshake
 
 template rejects(body: untyped) {.untyped.} =
   block:
@@ -11,6 +11,7 @@ template rejects(body: untyped) {.untyped.} =
     doAssert caught
 
 proc main() {.raises.} =
+  doAssert acceptKey("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
   block urls:
     let e = parseEndpoint("ws://localhost:8080/chat?token=x")
     doAssert e.host == "localhost" and e.port == 8080 and e.target == "/chat?token=x"

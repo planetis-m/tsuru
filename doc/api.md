@@ -2,8 +2,10 @@
 
 `import tsuru` exposes the application API. `tsuru/protocol` contains the
 independent codec and state machine; `tsuru/handshake` contains URI parsing and
-upgrade validation. The internal transport owns the socket and optional TLS
-handles and cannot be copied.
+upgrade validation.
+
+`buildRequest` expects the endpoint returned by `parseEndpoint` and a base64 nonce.
+`handleFrame` expects a frame accepted by `parseFrame`.
 
 A `WebSocket` is a reference handle: aliases refer to the same connection.
 Use it from one owning task, one operation at a time. No application locks are
@@ -11,6 +13,9 @@ needed when each task owns its own connection. Do not abort a connection from
 another task while an operation is suspended. The handle releases its transport
 when its last reference goes away; explicit `abort` gives deterministic cleanup.
 The library never shuts down the shared worker pool.
+
+A default `WebSocket()` is closed and owns no descriptor. Create live connections
+with `connectWebSocket`.
 
 `WebSocketOptions` must be constructed with `initWebSocketOptions`; an empty
 object has invalid zero limits. The library validates these fields at connect:
@@ -23,12 +28,17 @@ object has invalid zero limits. The library validates these fields at connect:
 
 Each operation accepts an absolute `Deadline` as `dl`. Its effective deadline
 is the earlier of that instant and `afterMs(options.timeoutMs)`. Deadlines start
-fresh for each call. The close handshake is also capped at five seconds.
+fresh for each call, including preparation and buffered receive processing.
+An expired deadline closes a live connection even when the complete message is
+already buffered. The close handshake is also capped at five seconds.
 
 `recv` returns `Message(kind, data, code)`. `code` is meaningful for `wmClose`.
 Empty text/binary messages are normal messages, distinct from closure. After a
-close, repeated receives return the recorded close. After an abort or an I/O
-failure without a peer close, the default recorded close has code 1006.
+close, repeated receives return the recorded result. `closeSource` distinguishes
+`csPeer`, `csEof`, `csLocal`, `csProtocolError` and `csTransportError`. Only `csPeer`
+reports a close received from the peer. A local protocol failure records the
+locally selected close code; abort, EOF and transport failure use 1006.
+An idempotent abort preserves an already recorded result.
 
 | ErrorCode | Typical cause | Connection effect |
 | --- | --- | --- |

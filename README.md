@@ -100,7 +100,9 @@ All network operations require the C backend.
 
 On peer close, `recv` returns its code and reason and echoes its close payload.
 Code `1005` means the peer omitted a status; `1006` means EOF without a close
-frame. Transport errors and timeouts raise `ErrorCode` and release the socket.
+frame. `message.closeSource` identifies peer closure, EOF, local abort, local
+protocol failure or transport failure. Transport errors and timeouts raise
+`ErrorCode` and release the socket.
 Invalid arguments leave a live connection intact. More detail:
 [API and error contracts](doc/api.md).
 
@@ -120,12 +122,9 @@ Set `NIMONY=/path/to/nimony` to select a compiler. Python 3 is needed for networ
 fixtures; TLS fixtures also use the `openssl` command to generate a temporary
 test certificate. Network tests use loopback only and require no Python packages.
 
-Use `HASHI_NIMONY=/path/to/hashi-compatible/nimony` if the server needs another
-compiler. The current sibling Hashi checkout predates Nimony 0.6.3's synchronization
-checks and fails to compile directly with this installed compiler.
-`python3 tests/hashi.py --compat` tests a temporary copy with synchronization
-assumptions and the stdlib's thread-local `errno` accessor. It does not edit Hashi.
-See [verification notes](doc/verification.md) for the tested scope and exact caveat.
+Set `HASHI_NIMONY=/path/to/nimony` to choose Hashi's compiler, or use
+`python3 tests/hashi.py --compat` to test a temporary compatibility copy.
+See [test coverage](doc/verification.md) for details.
 
 Protocol references: [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455),
 [OpenSSL hostname verification](https://docs.openssl.org/3.5/man3/SSL_set1_host/),

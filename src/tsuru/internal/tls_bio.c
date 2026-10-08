@@ -1,4 +1,4 @@
-/* OpenSSL socket BIO with per-send SIGPIPE suppression; no global signal changes. */
+/* Internal OpenSSL socket BIO with per-send SIGPIPE suppression. */
 #include <openssl/ssl.h>
 #include <openssl/crypto.h>
 #include <openssl/x509v3.h>

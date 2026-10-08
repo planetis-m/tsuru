@@ -1,8 +1,6 @@
 import testkit
 import tsuru/protocol
-
-block handshake_vector:
-  doAssert acceptKey("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+import wire
 
 block masking_vector:
   let wire = encodeFrame(opText, "Hello", [0x37'u8, 0xFA'u8, 0x21'u8, 0x3D'u8])
