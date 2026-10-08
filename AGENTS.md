@@ -1,7 +1,7 @@
 # Working on Tsuru
 
-This is a Nimony 0.6.3 library, not a Nim 2 library. Read stdlib declarations
-before using them. Errors are `ErrorCode`; scheduling and I/O use `.passive`.
+This is a Nimony library. Read installed stdlib declarations before using them.
+Errors are `ErrorCode`; scheduling and I/O use `.passive`.
 
 Build and check with `tests/run --network`. Test TLS changes with
 `tests/run --tls --network` and resource/I/O changes with
@@ -18,12 +18,8 @@ Custom ownership hooks belong only on resources the compiler cannot release;
 the transport is move-only and the public connection is a reference handle.
 Never shut down the application's shared worker pool from library code.
 
-The sibling Hashi checkout is a test dependency only, never a runtime dependency.
-Its current compiler compatibility caveat is recorded in doc/verification.md.
-Do not change Hashi as part of this client's tests; use tests/hashi.py --compat.
-
-Follow Hashi's module boundaries and byte-buffer conventions. `frame` owns the
-wire codec; `protocol` owns message assembly and protocol decisions. Socket and
+`frame` owns the wire codec; `protocol` owns message assembly and protocol
+decisions. `handshake` owns URL and HTTP upgrade decisions. Socket and
 OpenSSL declarations belong in `internal/net` and `internal/tls`; `transport`
 owns resources and passive I/O. Keep bulk string operations in `internal/buffer`.
 Use `openArray` views for byte operations and `beginStore`/`endStore` for writable
@@ -31,8 +27,12 @@ string storage. Keep raw pointers at the FFI and bulk-store boundaries.
 Borrowed parameters may span a normal passive call; scheduler entry points must
 take owned values. Source comments describe current contracts and invariants.
 
-Match Hashi's reusable send buffer and in-place receive consumption. Offer whole
-frames to the transport and handle partial writes there. Use a word-sized mask
-loop with a byte tail. Trust application-supplied outgoing payloads; document
-their preconditions rather than adding validation. Keep client-specific masking,
-upgrade checks and existing peer protocol checks.
+Keep connection state private to the client. Use strings for owned wire buffers
+and message payloads; accept byte sequences when that avoids a caller conversion.
+Offer coalesced frames to the transport and handle partial writes there. Keep
+buffer reuse and retained-memory costs explicit in the API docs. Trust outgoing
+application payloads and document their preconditions. Validate peer framing,
+text and upgrade responses. Every outgoing frame needs a fresh random mask.
+
+Use tests/hashi.py --compat for optional integration checks against the sibling
+server. The runner uses a temporary copy; do not change the server checkout.

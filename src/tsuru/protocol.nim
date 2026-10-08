@@ -47,7 +47,7 @@ proc validUtf8*(s: string): bool =
       i += n
   result = true
 
-proc validCloseCode*(code: int): bool =
+proc validCloseCode(code: int): bool =
   ## Codes allowed on the wire, including registered and private use ranges.
   result = code in 3000..4999 or code in 1000..1003 or code in 1007..1014
 

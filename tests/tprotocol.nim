@@ -6,17 +6,18 @@ block masking_vector:
   let wire = encodeFrame(opText, "Hello", [0x37'u8, 0xFA'u8, 0x21'u8, 0x3D'u8])
   doAssert wire == "\x81\x85\x37\xFA\x21\x3D\x7F\x9F\x4D\x51\x58"
 
-block masking_alignment_and_tails:
+block masking_lengths_and_reuse:
   let key = [0x37'u8, 0xFA'u8, 0x21'u8, 0x3D'u8]
-  for start in 0..7:
-    for n in 0..33:
-      var buffer = default(array[42, byte])
-      for i in 0..<n: buffer[start + i] = byte(i * 7)
-      buffer[start + n] = 255'u8
-      maskPayload(toOpenArray(buffer, start, start + n - 1), key)
-      for i in 0..<n:
-        doAssert buffer[start + i] == (byte(i * 7) xor key[i and 3])
-      doAssert buffer[start + n] == 255'u8
+  var buffer = ""
+  for n in [65536, 126, 125, 33, 32, 31, 17, 16, 15, 9, 8, 7, 1, 0]:
+    var data = newSeq[byte](n)
+    for i in 0..<n: data[i] = byte(i and 255)
+    encodeFrame(buffer, opBinary, data, key)
+    let head = frameHeader(opBinary, n, key)
+    doAssert buffer.len == head.len + n
+    doAssert buffer[0..<head.len] == head
+    for i in 0..<n:
+      doAssert uint8(buffer[head.len + i]) == (data[i] xor key[i and 3])
 
 block frame_lengths:
   for n in [0, 125, 126, 65535, 65536]:
@@ -31,10 +32,8 @@ block frame_lengths:
       doAssert parseFrame(wire[0..<cut], 0, f).status == psIncomplete
   var f = Frame()
   doAssert parseFrame("\x82\x7f\x80\0\0\0\0\0\0\0", 0, f).status == psError
-  doAssert parseFrame("\x82\x7e\0\x01x", 0, f).status == psOk
-  doAssert f.payload == "x"
-  doAssert parseFrame("\x82\x7f\0\0\0\0\0\0\0\x01x", 0, f).status == psOk
-  doAssert f.payload == "x"
+  doAssert parseFrame("\x82\x7e\0\x01x", 0, f).status == psError
+  doAssert parseFrame("\x82\x7f\0\0\0\0\0\0\0\x01x", 0, f).status == psError
   doAssert parseFrame("\x81\x80", 0, f).status == psError
   doAssert parseFrame("\xc1\0", 0, f).status == psError
   doAssert parseFrame("\x09\0", 0, f).status == psError

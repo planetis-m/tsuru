@@ -36,8 +36,8 @@ type
     status: WebSocketState
     selectedProtocol: string
     buffer: string
-    readBuffer: array[4096, byte]
-    sendBuffer: seq[byte]
+    readBuffer: array[8192, byte]
+    sendBuffer: string
     fragments: MessageState
     closure: CloseInfo
 
@@ -57,7 +57,7 @@ proc release(ws: WebSocket) =
   close(ws.transport)
   ws.status = wsClosed
   ws.buffer = ""
-  ws.sendBuffer = @[]
+  ws.sendBuffer = ""
   ws.fragments = MessageState()
 
 proc terminate(ws: WebSocket; source: CloseSource; code = 1006; reason = "") =
@@ -86,42 +86,21 @@ proc fill(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
   appendBytes(ws.buffer, toOpenArray(ws.readBuffer, 0, n - 1))
   result = n > 0
 
-proc fillSendBuf(ws: WebSocket; op: Opcode; data: string; key: array[4, uint8]): int =
-  ## Coalesce the header and masked payload in the connection's reusable buffer.
-  let head = frameHeader(op, data.len, key)
-  let total = head.len + data.len
-  if ws.sendBuffer.len < total:
-    ws.sendBuffer.setLen(total)
-  copyOut(toOpenArray(ws.sendBuffer, 0, head.len - 1), head)
-  copyOut(toOpenArray(ws.sendBuffer, head.len, total - 1), data)
-  maskPayload(toOpenArray(ws.sendBuffer, head.len, total - 1), key)
-  result = total
-
-proc fillSendBuf(ws: WebSocket; op: Opcode; data: openArray[byte];
-                 key: array[4, uint8]): int =
-  let head = frameHeader(op, data.len, key)
-  let total = head.len + data.len
-  if ws.sendBuffer.len < total:
-    ws.sendBuffer.setLen(total)
-  copyOut(toOpenArray(ws.sendBuffer, 0, head.len - 1), head)
-  if data.len > 0:
-    copyMem(addr ws.sendBuffer[head.len], addr data[0], data.len)
-  maskPayload(toOpenArray(ws.sendBuffer, head.len, total - 1), key)
-  result = total
-
 proc emit(ws: WebSocket; op: Opcode; data: string; dl: Deadline) {.passive, raises.} =
   checkDeadline(dl)
   var key = default(array[4, uint8])
   fillRandom(key)
-  let total = fillSendBuf(ws, op, data, key)
-  writeAll(ws.transport, toOpenArray(ws.sendBuffer, 0, total - 1), dl)
+  encodeFrame(ws.sendBuffer, op, data, key)
+  writeAll(ws.transport,
+    toOpenArray(readRawData(ws.sendBuffer), 0, ws.sendBuffer.len - 1), dl)
 
 proc emit(ws: WebSocket; op: Opcode; data: seq[byte]; dl: Deadline) {.passive, raises.} =
   checkDeadline(dl)
   var key = default(array[4, uint8])
   fillRandom(key)
-  let total = fillSendBuf(ws, op, data, key)
-  writeAll(ws.transport, toOpenArray(ws.sendBuffer, 0, total - 1), dl)
+  encodeFrame(ws.sendBuffer, op, data, key)
+  writeAll(ws.transport,
+    toOpenArray(readRawData(ws.sendBuffer), 0, ws.sendBuffer.len - 1), dl)
 
 proc prepareHandshake(url: string; options: WebSocketOptions; endpoint: var Endpoint;
                       key, request: var string) {.raises.} =
@@ -173,12 +152,12 @@ proc send*(ws: WebSocket; data: string; binary = false; dl = never) {.passive, r
     transportFailed(ws)
     raise e
 
-proc send*(ws: WebSocket; data: seq[byte]; binary = true; dl = never) {.passive, raises.} =
-  ## Send bytes without converting to a string; binary by default, text if requested.
+proc send*(ws: WebSocket; data: seq[byte]; dl = never) {.passive, raises.} =
+  ## Send one binary message without converting bytes to a string.
   if ws.status != wsOpen: raise BadOperation
   let deadline = budget(ws, dl)
   try:
-    emit(ws, (if binary: opBinary else: opText), data, deadline)
+    emit(ws, opBinary, data, deadline)
   except ErrorCode as e:
     transportFailed(ws)
     raise e

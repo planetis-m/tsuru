@@ -1,4 +1,4 @@
-## Round trip a message against hashi/examples/ws_echo.nim or another echo server.
+## Round trip a message against a WebSocket echo server.
 import std/[cmdline, syncio, threadpool, ioring, atomics]
 import tsuru
 

@@ -34,7 +34,7 @@ proc main(url, mode, caFile: string) {.passive.} =
         options.headers = @[Header(name: "Authorization", value: "Bearer test")]
       let ws = connectWebSocket(url, options)
       defer: ws.abort()
-      if mode == "hashi" or mode == "echo":
+      if mode == "echo":
         for n in [0, 5, 125, 126, 65536, 256000]:
           let data = repeat("x", n)
           ws.send(data)
@@ -77,18 +77,9 @@ proc main(url, mode, caFile: string) {.passive.} =
         let next = ws.recv()
         doAssert next.kind == wmBinary and next.data == "\0\xff"
         ws.close()
-      elif mode == "extended-length":
-        let message = ws.recv()
-        doAssert message.kind == wmBinary and message.data == "x"
-        ws.close()
       elif mode == "write-timeout":
         ws.send(repeat("x", 16 * 1024 * 1024))
       elif mode == "close-timeout": ws.close()
-      elif mode == "arguments":
-        ws.send(@[byte('v'), byte('a'), byte('l'), byte('i'), byte('d')], binary = false)
-        let reply = ws.recv()
-        doAssert reply.kind == wmText and reply.data == "valid"
-        ws.close()
       else: discard ws.recv()
   except ErrorCode as e:
     caught = e

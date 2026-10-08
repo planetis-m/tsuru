@@ -1,7 +1,7 @@
 # Tsuru (鶴)
 
 A WebSocket client for **Nimony**, with sequential `.passive` I/O on the
-standard library's worker pool. Connect to Hashi or another WebSocket server,
+standard library's worker pool. Connect to a WebSocket server,
 send text or binary messages, and receive complete messages while the client
 handles fragmentation, ping/pong, masking, and close handshakes.
 
@@ -24,12 +24,12 @@ Run the task on `std/threadpool` with `submit(delay chat())`. The complete
 [echo example](examples/echo.nim) includes scheduler startup, the main-thread
 reactor pump, error reporting, and shutdown.
 
-## Run against Hashi
+## Run
 
 Requires Nimony **0.6.3** and a C compiler. Linux is the supported platform.
 Plain `ws://` has no dependencies beyond Nimony's standard library.
 
-Start Hashi's `examples/ws_echo.nim` on port 8080, then from this repository:
+With a WebSocket echo server listening on port 8080, run:
 
 ```sh
 nimony c -r examples/echo.nim
@@ -42,7 +42,7 @@ nimony c -o:build/echo examples/echo.nim
 build/echo ws://localhost:8080/chat
 ```
 
-The library is independent of Hashi. To import it in another Nimony project,
+To import the library in another Nimony project,
 add a relative path to `tsuru/src` to that project's `nimony.paths`, or compile
 with `--path:/path/to/tsuru/src`.
 
@@ -78,7 +78,7 @@ Custom headers cannot replace handshake fields or add an HTTP request body.
 | --- | --- |
 | `connectWebSocket(url, options, dl)` | TCP/TLS connection and validated HTTP upgrade |
 | `ws.send(data, binary = false, dl)` | One masked message; caller supplies valid UTF-8 for text |
-| `ws.send(bytes: seq[byte], binary = true, dl)` | Send bytes directly, binary by default |
+| `ws.send(bytes: seq[byte], dl)` | Send one binary message without converting bytes to a string |
 | `ws.recv(dl)` | Complete text/binary message or `wmClose`; answers pings automatically |
 | `ws.ping(data = "", dl)` | Ping payload of at most 125 bytes; `recv` consumes pongs |
 | `ws.close(code = 1000, reason = "", dl)` | Send close and wait up to five seconds for the peer |
@@ -89,7 +89,7 @@ Custom headers cannot replace handshake fields or add an HTTP request body.
 default. Pass `afterMs(1000)` to tighten a single operation's deadline.
 The connection budget covers DNS, TCP, TLS and HTTP together. Receive budgets
 cover the whole message, including all fragments and interleaved controls.
-Receive limits default to 64 MiB and also bound assembled fragments.
+Receive limits default to 16 MiB and also bound assembled fragments.
 
 Binary sequences can be sent directly:
 
@@ -97,9 +97,10 @@ Binary sequences can be sent directly:
 ws.send(@[0'u8, 255'u8, 128'u8])
 ```
 
-Sends coalesce the header and masked payload in a reusable connection buffer.
-Receive processing consumes wire bytes in place. Both buffers retain capacity
-for reuse and are released when the connection closes.
+Sends copy and mask the payload in one pass into a reusable wire string, then
+write the coalesced frame. Receive processing consumes wire bytes in place.
+Both buffers retain their largest capacity until closure: repeated traffic
+reuses storage, while an occasional large message leaves that storage allocated.
 
 For a connection that can be quiet for several minutes, increase
 `options.timeoutMs` to match that receive budget. The
@@ -130,7 +131,6 @@ protocol failure or transport failure. Transport errors and timeouts raise
 `ErrorCode` and release the socket.
 Callers supply valid outgoing text and control payloads. More detail:
 [API and error contracts](doc/api.md).
-See the [Hashi comparison](doc/hashi-parity.md) for the corresponding implementation choices.
 
 ## Verify
 
@@ -141,15 +141,13 @@ tests/run --tls --network          # plus trusted TLS, untrusted CA and wrong-ho
 tests/run --release --network
 tests/run --danger --network
 tests/run --tls --asan --network   # AddressSanitizer and UndefinedBehaviorSanitizer
-python3 tests/hashi.py             # sibling Hashi echo server on port 8080
+python3 tests/hashi.py --compat    # optional integration test with a local Hashi server
 ```
 
 Set `NIMONY=/path/to/nimony` to select a compiler. Python 3 is needed for network
 fixtures; TLS fixtures also use the `openssl` command to generate a temporary
 test certificate. Network tests use loopback only and require no Python packages.
 
-Set `HASHI_NIMONY=/path/to/nimony` to choose Hashi's compiler, or use
-`python3 tests/hashi.py --compat` to test a temporary compatibility copy.
 See [test coverage](doc/verification.md) for details.
 
 Protocol references: [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455),

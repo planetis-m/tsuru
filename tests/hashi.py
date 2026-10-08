@@ -18,7 +18,7 @@ def main():
     parser.add_argument("--server-compiler", default=os.environ.get("HASHI_NIMONY",
                         os.environ.get("NIMONY", "nimony")))
     parser.add_argument("--compat", action="store_true",
-                        help="adapt a temporary copy for Nimony 0.6.3 synchronization checking")
+                        help="adapt a temporary server copy for synchronization checking")
     args = parser.parse_args()
     compiler = os.environ.get("NIMONY", "nimony")
     with tempfile.TemporaryDirectory(prefix="tsuru-hashi-") as tmp:
@@ -59,7 +59,7 @@ def main():
                 if not ready:
                     log.seek(0)
                     raise RuntimeError(log.read().decode())
-                subprocess.run([str(client_bin), "ws://127.0.0.1:8080/", "hashi"],
+                subprocess.run([str(client_bin), "ws://127.0.0.1:8080/", "echo"],
                                cwd=ROOT, check=True, timeout=15)
                 assert server.poll() is None, "Hashi exited during round trips"
                 print("Hashi interoperability passed" + (" (temporary compatibility copy)" if args.compat else ""))

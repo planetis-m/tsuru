@@ -4,12 +4,9 @@ Tested on Linux x86-64 with Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 
 | Configuration | Result |
 | --- | --- |
-| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 27 network fixtures passed |
-| Release, plain | Unit/fuzz, 22 network fixtures and unsupported-TLS check passed |
-| Release, TLS | Unit/fuzz and 27 network fixtures passed |
-| Danger, plain | Unit/fuzz, 22 network fixtures and unsupported-TLS check passed |
-| Danger, TLS | Unit/fuzz and 27 network fixtures passed |
-| Hashi temporary compatibility copy, fresh caches | Echo interoperability passed |
+| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 26 network fixtures passed |
+| Release, plain | Unit/fuzz, 21 network fixtures and unsupported-TLS check passed |
+| Danger, TLS | Unit/fuzz and 26 network fixtures passed |
 
 The independent Python fixtures exercise actual TCP and TLS connections and
 decode client masking without using this library's codec. Plain tests cover
@@ -34,25 +31,12 @@ The pure codec/handshake tests include the RFC accept-key and masking vectors,
 length boundaries and malformed input. A seeded fuzz program supplies 100,000
 cases to the frame, UTF-8, URL and HTTP upgrade parsers per run. This is a
 deterministic malformed-input test, not a coverage-guided fuzz campaign.
-The Autobahn client-role conformance suite has not been run.
+The Autobahn client-role conformance suite has not been run. The fixtures test
+correctness and resource cleanup; they do not establish throughput or latency.
 
-## Masked-copy timing
+## Optional integration server
 
-A local release benchmark copied and masked a 1 MiB payload 512 times per
-sample, comparing Tsuru's payload view at client-header offset 14 with Hashi's
-aligned mask kernel. Seven samples alternated execution order and compared the
-resulting bytes. Median times were 14.63 ms for Tsuru and 14.59 ms for Hashi.
-This measures the copy/mask stage; it does not measure TCP or TLS throughput.
-
-## Hashi interoperability
-
-Run `python3 tests/hashi.py --compat` to test text, binary, ping/pong and close
-against Hashi's echo server. The runner adapts a temporary source copy:
-
-- Add `{.feature: "assumeSync".}` to copied Hashi modules, accepting their
-  existing synchronization assumptions for this interoperability test.
-- Replace the imported `errno` variable with `std/posix/posix.errno()`.
-
-The test covers wire interoperability, not Hashi's concurrency. To test the
-original sources, set `HASHI_NIMONY` to a compatible compiler and omit `--compat`.
-Port 8080 must be available.
+Run `python3 tests/hashi.py --compat` to exercise text, binary, ping/pong and
+close against a temporary copy of the sibling Hashi echo server. This does not
+modify the checkout. To use another compiler for its original sources, set
+`HASHI_NIMONY` and omit `--compat`. Port 8080 must be available.

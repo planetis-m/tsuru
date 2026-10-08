@@ -13,10 +13,11 @@ Application code normally needs only `import tsuru`.
 `handleFrame` expects a frame accepted by `parseFrame`.
 `parseFrame` expects `0 <= start <= data.len` and a nonnegative payload limit;
 `handleFrame` expects a nonnegative message limit.
-`frameHeader` includes the four-byte mask key; `maskPayload` applies that key
-in place to a complete payload, passed as a mutable `openArray[byte]`.
-Use a fresh cryptographic mask for each frame. `encodeFrame` builds a complete wire string
-when a standalone encoded frame is needed.
+`frameHeader` includes the four-byte mask key. `encodeFrame` returns a complete
+wire string; its `var string` overload reuses caller-owned storage and accepts
+character or byte views. Its input must not alias the output string. Encoding
+copies and masks the payload in one pass. Use a fresh cryptographic mask for
+each frame.
 
 A `WebSocket` is a reference handle: aliases refer to the same connection.
 Use it from one owning task, one operation at a time. No application locks are
@@ -26,10 +27,12 @@ when its last reference goes away; explicit `abort` gives deterministic cleanup.
 The library never shuts down the shared worker pool.
 
 `send(string, binary = false, dl)` sends text by default; `binary = true` sends
-the string's bytes unchanged as binary. `send(seq[byte], binary = true, dl)`
-sends binary by default and avoids a sequence-to-string conversion. Both send
-one frame, coalescing its header and masked payload in a reusable connection
-buffer. The buffer grows to the largest frame sent and is released on closure.
+the string's bytes unchanged as binary. `send(seq[byte], dl)` sends binary and
+avoids a sequence-to-string conversion. Both send one frame, coalescing its
+header and masked payload in a reusable connection-owned string. The buffer
+grows to the largest frame sent and is released on closure. This retains a
+wire copy in addition to the caller's payload. Small encoded frames can use
+inline string storage.
 Writes offer the whole remaining frame and retry only on partial writes or
 socket backpressure.
 
@@ -44,6 +47,10 @@ own their data.
 Socket calls, address layouts, OpenSSL bindings and bulk buffer operations live
 in `tsuru/internal`. The transport owns descriptors and TLS handles; the client
 owns unconsumed wire bytes, fragment state and the recorded close outcome.
+The encoder builds wire bytes without I/O. The protocol updates fragment state
+and returns messages or control actions. The client owns connection-state
+transitions and applies those actions; only the transport performs socket and
+TLS operations.
 
 A default `WebSocket()` is closed and owns no descriptor. Create live connections
 with `connectWebSocket`.
