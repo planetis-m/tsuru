@@ -1,4 +1,4 @@
-# API contracts
+# WebSocket API contracts
 
 | Import | Responsibility |
 | --- | --- |
@@ -9,7 +9,9 @@
 
 Application code uses `import tsuru` and `import std/opt` to match receive results.
 
-`buildRequest` expects the endpoint returned by `parseEndpoint` and a base64 nonce.
+`tsuru/handshake` exports `Endpoint`; `parseEndpoint` returns its host, authority,
+encoded target, port and TLS selection. `buildRequest` expects that value and a
+base64 nonce.
 `handleFrame` expects a frame accepted by `parseFrame`.
 `parseFrame` expects `0 <= start <= data.len` and a nonnegative payload limit;
 `handleFrame` expects a nonnegative message limit.

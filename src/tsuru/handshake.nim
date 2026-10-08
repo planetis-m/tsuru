@@ -1,4 +1,4 @@
-## URI parsing and HTTP upgrade validation for the client opening handshake.
+## WebSocket opening request construction and HTTP upgrade validation.
 import std/[strutils, sha1, base64]
 from std/http/httpparse import MaxHeadLen
 from tsuru/http import Header, validToken, cleanValue, hasToken
