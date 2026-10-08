@@ -4,9 +4,9 @@ Tested on Linux x86-64 with Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 
 | Configuration | Result |
 | --- | --- |
-| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 42 network fixtures passed |
-| Release, plain | Unit/fuzz, 33 network fixtures and unsupported-TLS check passed |
-| Danger, TLS | Unit/fuzz and 42 network fixtures passed |
+| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 73 network fixtures passed |
+| Release, plain | Unit/fuzz, 56 network fixtures and setup-expiry/unsupported-TLS checks passed |
+| Danger, TLS | Unit/fuzz and 73 network fixtures passed |
 
 The independent Python fixtures exercise actual TCP and TLS connections and
 decode client masking without using this library's codec. Plain tests cover
@@ -60,6 +60,28 @@ cases to the frame, UTF-8, URL and HTTP upgrade parsers per run. This is a
 deterministic malformed-input test, not a coverage-guided fuzz campaign.
 The Autobahn client-role conformance suite has not been run. The fixtures test
 correctness and resource cleanup; they do not establish throughput or latency.
+
+## HTTP client
+
+The HTTP fixtures include 23 plain cases and eight HTTPS cases. They exercise
+sequential keep-alive, HTTP/1.0 persistence, informational heads, bytewise chunk
+delivery, extensions and trailers, HEAD/204/304 responses, duplicate response
+headers, EOF bodies and a 21 MiB binary request/response round trip.
+
+Head and body expiry release the connection. A body read with a later deadline
+still expires at the original request deadline. Other fixtures cover truncated
+bodies, malformed heads/chunks/trailers, fixed/chunked/EOF size limits, oversized
+heads, unsupported upgrades, immediate close and rejection of a request while
+the previous body remains unread. HTTP status errors remain ordinary responses.
+The resource fixture opens 17 connections in one process and checks stable
+descriptor counts across successful exchanges, protocol errors, truncated
+bodies, body expiry, local close, expired requests and size limits.
+
+HTTPS fixtures cover verified keep-alive with SNI, chunked and large bodies,
+head/body expiry, abrupt transport shutdown, untrusted certificates and wrong
+hostnames. Separate setup probes check already-expired deadlines and HTTPS
+rejection in a build without TLS. Pure head tests check ambiguous framing and
+request-header injection without involving sockets.
 
 ## Optional integration server
 

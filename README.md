@@ -1,7 +1,7 @@
 # Tsuru (鶴)
 
-A WebSocket client for **Nimony**, with sequential `.passive` I/O on the
-standard library's worker pool. Connect to a WebSocket server,
+A WebSocket and HTTP/1.1 client library for **Nimony**, with sequential `.passive`
+I/O on the standard library's worker pool. Connect to a WebSocket server,
 send text or binary messages, and receive complete messages while the client
 handles fragmentation, ping/pong, masking, and close handshakes.
 
@@ -174,6 +174,34 @@ handshake. Continue receiving to await a peer-initiated close, handling `None`
 according to the application's deadline policy.
 Callers supply valid outgoing text and control payloads. More detail:
 [API and error contracts](doc/api.md).
+
+## HTTP client
+
+Import `tsuru/httpclient` for HTTP and verified HTTPS. Requests take an explicit
+absolute deadline; that same instant bounds sending, the response head and all
+body reads. Connections support sequential keep-alive requests.
+
+```nim
+import tsuru/httpclient
+
+proc fetch() {.passive, raises.} =
+  let deadline = afterMs(10_000)
+  let c = connectHttp("https://example.com/data", deadline)
+  defer: c.close()
+  let response = c.request(deadline)
+  let body = c.readAll()
+  discard response.status
+  discard body
+```
+
+Use `readBody` with caller-owned storage to stream large responses. Complete the
+current body before requesting again, or close. Content-Length, chunks,
+trailers, bodyless responses and EOF framing are handled automatically.
+HTTP failures raise ErrorCode and release an active exchange; status codes are
+returned normally. HTTPS uses the same `-d:tsuruTls` flag and verified transport.
+
+Run `nimony c -d:tsuruTls -r examples/http_get.nim https://example.com/`.
+See [HTTP contracts and deadlines](doc/http.md) for limits, headers and streaming.
 
 ## Verify
 

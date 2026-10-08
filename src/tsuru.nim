@@ -7,7 +7,8 @@
 ## Connection setup raises ErrorCode on failure.
 ## Run parking operations in a passive task submitted to the application's pool.
 ## Callers supply valid outgoing text and control payloads.
-import std/[ioring, base64, strutils, opt]
+import std/[ioring, base64, opt]
+from std/http/httpparse import HeadScanner, findHeadEnd, ParseBad
 import tsuru/[frame, protocol, handshake]
 import tsuru/internal/[transport, entropy, buffer]
 export handshake.Header, handshake.WebSocketOptions, handshake.initWebSocketOptions
@@ -155,17 +156,17 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
          options.caFile, deadline)
     writeAll(result.transport,
       toOpenArray(readRawDataStable(request), 0, request.len - 1), deadline)
-    var endHead = -1
-    while endHead < 0:
+    var scan = HeadScanner()
+    var headLen = -1
+    while headLen < 0:
       if not fill(result, deadline): raise EndOfStreamError
-      endHead = result.buffer.find("\r\n\r\n")
-      if (endHead < 0 and result.buffer.len > MaxHandshake) or
-          endHead > MaxHandshake - 4:
+      headLen = findHeadEnd(scan, result.buffer)
+      if headLen == ParseBad or headLen > MaxHandshake:
         raise ContentTooLong
-    let head = result.buffer[0 .. endHead + 3]
+    let head = result.buffer[0..<headLen]
     checkHandshake(head, key, options.protocols, result.selectedProtocol)
     checkDeadline(deadline)
-    dropPrefix(result.buffer, endHead + 4)
+    dropPrefix(result.buffer, headLen)
     result.status = connOpen
   except ErrorCode as e:
     terminate(result, csTransportError)

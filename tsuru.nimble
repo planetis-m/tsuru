@@ -1,5 +1,5 @@
 version = "0.1.0"
 author = "Tsuru contributors"
-description = "Passive WebSocket client for Nimony with optional verified OpenSSL TLS"
+description = "Passive WebSocket and HTTP clients for Nimony with optional verified OpenSSL TLS"
 license = "MIT"
 srcDir = "src"

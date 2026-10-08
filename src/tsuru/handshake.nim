@@ -1,13 +1,14 @@
 ## URI parsing and HTTP upgrade validation for the client opening handshake.
 import std/[strutils, sha1, base64]
-from std/http/httpparse import parseToken
+from std/http/httpparse import MaxHeadLen
+from tsuru/http import Header, validToken, cleanValue, hasToken
+import tsuru/internal/endpoint
+export Header, endpoint.Endpoint
 from tsuru/frame import DefaultMaxMessage
 
-const MaxHandshake* = 16 * 1024
+const MaxHandshake* = MaxHeadLen
 
 type
-  Header* = object
-    name*, value*: string
   WebSocketOptions* = object
     ## Limits and handshake fields. Construct with initWebSocketOptions.
     maxMessage*: int
@@ -18,10 +19,6 @@ type
     headers*: seq[Header]
     caFile*: string
       ## Optional CA file for TLS; empty uses OpenSSL's system trust paths.
-  Endpoint* = object
-    host*, authority*, target*: string
-    port*: uint16
-    secure*: bool
 
 proc initWebSocketOptions*(maxMessage: Positive = DefaultMaxMessage;
                            timeoutMs: Positive = 30_000): WebSocketOptions =
@@ -35,61 +32,9 @@ proc acceptKey*(key: string): string =
   ctx.update("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
   result = encode(ctx.finalize())
 
-proc validToken(s: string): bool =
-  s.len > 0 and parseToken(toOpenArray(s, 0, s.len - 1)) == s.len
-
-proc cleanValue(s: string): bool =
-  s.find({'\0'..'\x1f', '\x7f'} - {'\t'}) == -1
-
 proc parseEndpoint*(url: string): Endpoint {.raises.} =
-  ## Parse ws/wss URLs; reject fragments, userinfo, whitespace and unescaped controls.
-  var start = 0
-  var secure = false
-  if url.startsWith("ws://"): start = 5
-  elif url.startsWith("wss://"):
-    start = 6
-    secure = true
-  else: raise ValueError
-  if url.find({'\0'..' ', '\x7f'..'\xff', '#', '\\'}) >= 0: raise ValueError
-  var stop = start
-  while stop < url.len and url[stop] != '/' and url[stop] != '?': inc stop
-  if stop == start: raise ValueError
-  let authority = url[start..<stop]
-  if '@' in authority: raise ValueError
-  var host = ""
-  var portText = ""
-  if authority[0] == '[':
-    let bracket = authority.find(']')
-    if bracket <= 1: raise ValueError
-    host = authority[1..<bracket]
-    if ':' notin host: raise ValueError
-    if bracket + 1 < authority.len:
-      if authority[bracket + 1] != ':': raise ValueError
-      portText = authority[bracket + 2..^1]
-      if portText.len == 0: raise ValueError
-  else:
-    let colon = authority.find(':')
-    if colon >= 0:
-      host = authority[0..<colon]
-      portText = authority[colon + 1..^1]
-      if portText.len == 0: raise ValueError
-    else: host = authority
-    if not host.allCharsInSet(Letters + Digits + {'-', '.'}): raise ValueError
-  if host.len == 0: raise ValueError
-  var port = if secure: 443 else: 80
-  if portText.len > 0:
-    port = 0
-    for c in portText:
-      if c notin {'0'..'9'}: raise ValueError
-      port = port * 10 + ord(c) - ord('0')
-      if port > 65535: raise ValueError
-    if port == 0: raise ValueError
-  var target = "/"
-  if stop < url.len:
-    target = url[stop..^1]
-    if target[0] == '?': target = "/" & target
-  result = Endpoint(host: host, authority: authority, target: target,
-                    port: uint16(port), secure: secure)
+  ## Parse ws/wss URLs, preserving the encoded request target.
+  endpoint.parseEndpoint(url, "ws", "wss")
 
 proc validateOptions*(options: WebSocketOptions) {.raises.} =
   ## Reject invalid limits and fields that could alter the upgrade request.
@@ -119,11 +64,6 @@ proc buildRequest*(e: Endpoint; key: string; options: WebSocketOptions): string 
   for h in options.headers: result.add h.name & ": " & h.value & "\r\n"
   result.add "\r\n"
   if result.len > MaxHandshake: raise ContentTooLong
-
-proc hasToken(value, token: string): bool =
-  result = false
-  for part in value.split(','):
-    if part.strip().toLowerAscii() == token: return true
 
 proc validateResponse*(head, key: string; offered: seq[string]): string {.raises.} =
   ## Require 101, upgrade tokens, the exact accept key, and an offered subprotocol.

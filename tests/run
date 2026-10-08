@@ -22,6 +22,7 @@ for test in tests/t*.nim; do
   fi
 done
 "$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:build/client tests/client.nim
+"$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:build/http-client tests/http_client.nim
 for example in examples/*.nim; do
   "$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:"build/$(basename "$example" .nim)" "$example"
 done
@@ -29,5 +30,6 @@ if [[ "$network" == 1 ]]; then
   extra=()
   if [[ "$tls" == 1 ]]; then extra+=(--tls); fi
   python3 tests/network.py build/client "${extra[@]}"
+  python3 tests/http_network.py build/http-client "${extra[@]}"
 fi
 echo 'All requested checks passed.'

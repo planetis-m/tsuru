@@ -5,6 +5,9 @@ Connection setup raises `ErrorCode`; live sends return bool and close returns a
 terminal `Message`. Receive returns `Opt[Message]`: `None` on expiry without
 closing or losing partial state, `Some(wmClose)` on termination.
 Scheduling and I/O use `.passive`.
+HTTP operations raise ErrorCode; failures during an exchange release the
+connection. connectHttp and request take explicit absolute deadlines. Body
+reads inherit the request deadline and can tighten it, never renew it.
 
 Build and check with `tests/run --network`. Test TLS changes with
 `tests/run --tls --network` and resource/I/O changes with
@@ -24,8 +27,11 @@ the transport is move-only and the public connection is a reference handle.
 Never shut down the application's shared worker pool from library code.
 
 `frame` owns the wire codec; `protocol` owns message assembly and protocol
-decisions. `handshake` owns URL and HTTP upgrade decisions. Socket and
-OpenSSL declarations belong in `internal/net` and `internal/tls`; `transport`
+decisions. `handshake` owns HTTP upgrade decisions.
+`http` owns pure heads; `httpclient` owns
+request deadlines, keep-alive and body framing. Shared authorities and targets
+belong in `internal/endpoint`.
+Socket and OpenSSL declarations belong in `internal/net` and `internal/tls`; `transport`
 owns resources and passive I/O. Keep bulk string operations in `internal/buffer`.
 Use `openArray` views for byte operations and `beginStore`/`endStore` for writable
 string storage. Keep raw pointers at the FFI and bulk-store boundaries.

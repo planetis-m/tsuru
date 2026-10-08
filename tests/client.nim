@@ -1,7 +1,8 @@
 ## Network test driver. The Python runner supplies independent wire fixtures.
-import std/[cmdline, syncio, threadpool, ioring, atomics, strutils, parseutils, dirs, paths, opt]
+import std/[cmdline, syncio, threadpool, ioring, atomics, strutils, parseutils, opt]
 import tsuru
 import testkit
+import fdcount
 
 var done: int
 var failed: int
@@ -14,10 +15,6 @@ proc receive(ws: WebSocket; dl = never): Message {.passive.} =
 proc dropConnection(url: string) {.passive, raises.} =
   let ws = connectWebSocket(url)
   doAssert ws.send("drop without explicit close")
-
-proc fdCount(): int {.raises.} =
-  result = 0
-  for entry in walkDir(path("/proc/self/fd"), checkDir = true): inc result
 
 proc resourceLoop(url: string) {.passive, raises.} =
   let warmup = connectWebSocket(url)

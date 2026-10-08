@@ -86,7 +86,7 @@ def echo(sock):
             return
 
 
-def fixture(sock, mode, wire=None, code=1002):
+def fixture(sock, mode, wire=None, code=1002, client_done=None):
     if mode == "handshake-timeout":
         time.sleep(0.5)
         return
@@ -245,7 +245,7 @@ def fixture(sock, mode, wire=None, code=1002):
         return
     if mode == "write-timeout":
         handshake(sock)
-        time.sleep(0.7)
+        assert client_done.wait(10), "client did not finish its stalled write"
         return
     handshake(sock, suffix=wire)
     op, body = read_frame(sock)
@@ -276,6 +276,7 @@ def resource_fixture(listener):
 
 def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False, hostname=None):
     errors = []
+    client_done = threading.Event()
     family = socket.AF_INET6 if ipv6 else socket.AF_INET
     with socket.socket(family) as listener:
         listener.bind(("::1" if ipv6 else "127.0.0.1", 0))
@@ -298,7 +299,7 @@ def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False,
                                 return
                             raise
                     with peer:
-                        fixture(peer, mode, wire, code)
+                        fixture(peer, mode, wire, code, client_done)
             except BaseException as error:
                 errors.append(error)
 
@@ -306,8 +307,11 @@ def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False,
         thread.start()
         host = hostname or ("[::1]" if ipv6 else "127.0.0.1")
         scheme = "wss" if tls else "ws"
-        result = subprocess.run([str(binary), f"{scheme}://{host}:{port}/chat?q=1", mode, ca],
-                                capture_output=True, text=True, timeout=30)
+        try:
+            result = subprocess.run([str(binary), f"{scheme}://{host}:{port}/chat?q=1", mode, ca],
+                                    capture_output=True, text=True, timeout=30)
+        finally:
+            client_done.set()
         thread.join(11)
         assert not thread.is_alive(), "fixture thread did not finish"
         assert result.returncode == 0, result.stdout + result.stderr
