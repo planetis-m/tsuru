@@ -1,14 +1,11 @@
 import testkit
 import tsuru/internal/buffer
 
-block append_and_copy:
+block append:
   var s = "hi"
   let alias = s
   appendBytes(s, ['!', '\0', '\xFF'])
   doAssert s == "hi!\0\xFF" and alias == "hi"
-  var bytes = default(array[3, char])
-  copyOut(bytes, s, start = 2)
-  doAssert bytes == ['!', '\0', '\xFF']
 
 block consume:
   var s = "firstsecond"

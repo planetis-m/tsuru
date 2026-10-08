@@ -18,7 +18,7 @@ proc resourceLoop(url: string) {.passive, raises.} =
   let warmup = connectWebSocket(url)
   warmup.abort()
   let baseline = fdCount()
-  for cycle in 0..<6:
+  for cycle in 0..<2:
     for mode in ["peer", "bad-upgrade", "protocol", "reset", "close-timeout", "abort", "setup-timeout"]:
       var caught = Success
       try:

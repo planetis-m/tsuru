@@ -1,7 +1,7 @@
 ## Nonblocking TCP and optional verified TLS. Only readiness waits park on the ring.
 ## Deadlines never leave a kernel read holding a pointer into an expired task.
 import std/[ioring, dns, strutils]
-import ./[buffer, net]
+import ./net
 from std/socket import toErr
 from std/posix/posix import errno, EAGAIN, EINTR
 
@@ -166,13 +166,3 @@ proc writeAll*[T: char | byte](t: var Transport; data: openArray[T]; dl: Deadlin
     {.passive, raises.} =
   var sent = 0
   writeAll(t, data, sent, dl)
-
-proc writeAll*(t: var Transport; data: string; dl: Deadline) {.passive, raises.} =
-  ## Copy string chunks into task-owned memory before any suspended write.
-  var buf = default(array[8192, char])
-  var off = 0
-  while off < data.len:
-    let count = min(buf.len, data.len - off)
-    copyOut(toOpenArray(buf, 0, count - 1), data, off)
-    writeAll(t, toOpenArray(buf, 0, count - 1), dl)
-    off += count

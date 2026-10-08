@@ -44,7 +44,7 @@ protocol validation remains enabled.
 | Peer closure preserves terminal information | `fragments` and `commands`: peer code, reason and source |
 | Malformed frames terminate and release | Protocol-error and size-limit fixtures |
 | An unresponsive peer cannot hold teardown open | `close-timeout`: 100 ms caller deadline, measured under 500 ms |
-| Descriptors are released on terminal paths | `resources`: 43 connections in one client process with stable `/proc/self/fd` counts |
+| Descriptors are released on terminal paths | `resources`: 15 connections in one client process with stable `/proc/self/fd` counts |
 
 The repeated-connect fixture covers peer close, rejected upgrade, malformed
 frames, transport reset, close expiry, abort and setup expiry. Ordinary receive

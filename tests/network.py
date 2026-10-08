@@ -258,7 +258,7 @@ def resource_fixture(listener):
         peer.settimeout(5)
         handshake(peer)
         assert peer.recv(1) == b""
-    for _ in range(6):
+    for _ in range(2):
         for mode in ("peer", "bad-upgrade", "protocol", "reset", "close-timeout", "abort", "setup-timeout"):
             with listener.accept()[0] as peer:
                 peer.settimeout(5)

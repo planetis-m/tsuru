@@ -1,7 +1,7 @@
 # Working on Tsuru
 
 This is a Nimony library. Read installed stdlib declarations before using them.
-Connection setup raises `ErrorCode`; live sends and close return bool, and
+Connection setup raises `ErrorCode`; live sends and close return bool.
 Receive expiry returns `wmTimeout` without closing or losing partial state;
 receive and waitClose report termination as `wmClose`. Scheduling and I/O use `.passive`.
 

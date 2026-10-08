@@ -40,7 +40,7 @@ type
     buffer: string
     readBuffer: array[8192, byte]
     sendBuffer: string
-    sent: int
+    sent: int ## Bytes written from sendBuffer; a paused pong preserves both across recv expiry.
     fragments: MessageState
     closure: CloseInfo
 
@@ -76,7 +76,6 @@ proc closedMessage(ws: WebSocket): Message =
 proc abort*(ws: WebSocket) =
   ## Release immediately without a close handshake. Preserve an existing close result.
   if ws.status != wsClosed: terminate(ws, csLocal)
-  else: release(ws)
 
 proc transportFailed(ws: WebSocket; error: ErrorCode) =
   if ws.closure.code == 0:
@@ -96,7 +95,8 @@ proc flush(ws: WebSocket; dl: Deadline) {.passive, raises.} =
     writeAll(ws.transport,
       toOpenArray(readRawData(ws.sendBuffer), 0, ws.sendBuffer.len - 1), ws.sent, dl)
 
-proc queueFrame[T: char | byte](ws: WebSocket; op: Opcode; data: openArray[T]) {.raises.} =
+proc prepareFrame[T: char | byte](ws: WebSocket; op: Opcode; data: openArray[T]) {.raises.} =
+  ## Replace a fully flushed frame. Keep its bytes unchanged until flush completes.
   var key = default(array[4, uint8])
   fillRandom(key)
   encodeFrame(ws.sendBuffer, op, data, key)
@@ -106,7 +106,7 @@ proc emit(ws: WebSocket; op: Opcode; data: string; dl: Deadline): bool {.passive
   try:
     checkDeadline(dl)
     flush(ws, dl)
-    queueFrame(ws, op, data)
+    prepareFrame(ws, op, data)
     flush(ws, dl)
     result = true
   except ErrorCode as e:
@@ -117,7 +117,7 @@ proc emit(ws: WebSocket; op: Opcode; data: seq[byte]; dl: Deadline): bool {.pass
   try:
     checkDeadline(dl)
     flush(ws, dl)
-    queueFrame(ws, op, data)
+    prepareFrame(ws, op, data)
     flush(ws, dl)
     result = true
   except ErrorCode as e:
@@ -147,7 +147,8 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
   try:
     open(result.transport, endpoint.host, endpoint.port, endpoint.secure,
          options.caFile, deadline)
-    writeAll(result.transport, request, deadline)
+    writeAll(result.transport,
+      toOpenArray(readRawDataStable(request), 0, request.len - 1), deadline)
     var endHead = -1
     while endHead < 0:
       if not fill(result, deadline): raise EndOfStreamError
@@ -214,7 +215,7 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive.} =
         case action.kind
         of akNone: discard
         of akPong:
-          queueFrame(ws, opPong, action.data)
+          prepareFrame(ws, opPong, action.data)
           flush(ws, deadline)
         of akMessage:
           return Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
