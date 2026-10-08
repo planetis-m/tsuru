@@ -1,7 +1,7 @@
 ## URI parsing and HTTP upgrade validation for the client opening handshake.
 import std/[strutils, sha1, base64]
 from std/http/httpparse import parseToken
-from tsuru/protocol import DefaultMaxMessage
+from tsuru/frame import DefaultMaxMessage
 
 const MaxHandshake* = 16 * 1024
 

@@ -1,27 +1,21 @@
-## RFC 6455 framing and client protocol decisions, independent of socket I/O.
-
-const DefaultMaxMessage* = 16 * 1024 * 1024
+## WebSocket message assembly, UTF-8 and close handling, independent of I/O.
+import ./frame
+export frame
 
 type
-  Opcode* = enum
-    opContinuation = 0, opText = 1, opBinary = 2, opClose = 8, opPing = 9, opPong = 10
-  ParseStatus* = enum
-    psIncomplete, psOk, psError, psTooLarge
-  ParseResult* = object
-    status*: ParseStatus
-    consumed*: int
-  Frame* = object
-    fin*: bool
-    opcode*: Opcode
-    payload*: string
   ActionKind* = enum
     akNone, akMessage, akPong, akClose, akError
   Action* = object
+    ## A complete message, control reply or local protocol failure for the I/O loop.
     kind*: ActionKind
     data*: string
+      ## Message bytes, pong bytes or peer close reason, according to kind.
     binary*: bool
+      ## Message type for akMessage.
     code*: int
+      ## Close status for akClose or local failure status for akError.
   MessageState* = object
+    ## Owns an unfinished fragmented message between handleFrame calls.
     fragmented: bool
     binary: bool
     data: string
@@ -65,81 +59,22 @@ proc closeBody*(code: int; reason = ""): string =
   result.add char(code and 255)
   result.add reason
 
-proc frameHeader*(op: Opcode; n: int; key: array[4, uint8]; fin = true): string =
-  ## Encode a masked client header, including the key, for a payload of n bytes.
-  result = ""
-  result.add char(ord(op) or (if fin: 128 else: 0))
-  let maskBit = 128
-  if n < 126: result.add char(n or maskBit)
-  elif n <= 65535:
-    result.add char(126 or maskBit)
-    result.add char((n shr 8) and 255)
-    result.add char(n and 255)
-  else:
-    result.add char(127 or maskBit)
-    for shift in countdown(7, 0):
-      result.add char((uint64(n) shr (shift * 8)) and 255'u64)
-  for b in key: result.add char(b)
-
-proc maskInto*[T: char | byte](dest: ptr UncheckedArray[char]; source: openArray[T];
-                              key: array[4, uint8]; offset = 0) =
-  ## Mask source into dest, which must have room for source.len bytes.
-  ## offset is the source chunk's position within the complete frame payload.
-  for i in 0..<source.len:
-    dest[i] = char(ord(source[i]) xor int(key[(offset + i) and 3]))
-
-proc encodeFrame*(op: Opcode; data: string; key: array[4, uint8]; fin = true): string =
-  ## Encode a masked client frame. Supply a fresh cryptographic key for every call.
-  result = frameHeader(op, data.len, key, fin)
-  let headerLen = result.len
-  let dest = beginStore(result, headerLen + data.len, headerLen)
-  maskInto(cast[ptr UncheckedArray[char]](dest), data, key)
-  endStore(result)
-
-proc parseFrame*(data: string; start: int; frame: var Frame;
-                 maxPayload = DefaultMaxMessage): ParseResult =
-  ## Parse one unmasked server frame. Check lengths before allocation and indexing.
-  result = ParseResult(status: psIncomplete)
-  if start < 0 or start > data.len or maxPayload < 0:
-    return ParseResult(status: psError)
-  let avail = data.len - start
-  if avail < 2: return
-  let b0 = ord(data[start])
-  let b1 = ord(data[start + 1])
-  let op = b0 and 15
-  if (b0 and 112) != 0 or (b1 and 128) != 0 or op notin [0, 1, 2, 8, 9, 10]:
-    return ParseResult(status: psError)
-  let fin = (b0 and 128) != 0
-  if op >= 8 and not fin: return ParseResult(status: psError)
-  var size = uint64(b1 and 127)
-  var head = 2
-  if size == 126 or size == 127:
-    let bytes = if size == 126: 2 else: 8
-    head += bytes
-    if avail < head: return
-    size = 0'u64
-    for i in 0..<bytes: size = (size shl 8) or uint64(ord(data[start + 2 + i]))
-    if (bytes == 2 and size < 126) or (bytes == 8 and size < 65536) or
-        (size shr 63) != 0:
-      return ParseResult(status: psError)
-  if op >= 8 and size > 125: return ParseResult(status: psError)
-  if size > uint64(maxPayload): return ParseResult(status: psTooLarge)
-  let n = int(size)
-  if n > avail - head: return
-  var opcode = opContinuation
-  case op
-  of 1: opcode = opText
-  of 2: opcode = opBinary
-  of 8: opcode = opClose
-  of 9: opcode = opPing
-  of 10: opcode = opPong
-  else: discard
-  frame = Frame(fin: fin, opcode: opcode)
-  if n > 0: frame.payload = data[start + head .. start + head + n - 1]
-  result = ParseResult(status: psOk, consumed: head + n)
-
 proc failure(code: int): Action =
   Action(kind: akError, code: code)
+
+proc handleClose(f: Frame): Action =
+  let n = f.payload.len
+  if n == 0:
+    return Action(kind: akClose, code: 1005)
+  if n == 1:
+    return failure(1002)
+  let code = (ord(f.payload[0]) shl 8) or ord(f.payload[1])
+  if not validCloseCode(code):
+    return failure(1002)
+  let reason = if n > 2: f.payload[2..^1] else: ""
+  if not validUtf8(reason):
+    return failure(1007)
+  result = Action(kind: akClose, code: code, data: reason)
 
 proc handleFrame*(s: var MessageState; f: Frame;
                   maxMessage = DefaultMaxMessage): Action =
@@ -148,14 +83,7 @@ proc handleFrame*(s: var MessageState; f: Frame;
   case f.opcode
   of opPing: result = Action(kind: akPong, data: f.payload)
   of opPong: result = Action(kind: akNone)
-  of opClose:
-    if f.payload.len == 0: return Action(kind: akClose, code: 1005)
-    if f.payload.len == 1: return failure(1002)
-    let code = (ord(f.payload[0]) shl 8) or ord(f.payload[1])
-    if not validCloseCode(code): return failure(1002)
-    let reason = if f.payload.len > 2: f.payload[2..^1] else: ""
-    if not validUtf8(reason): return failure(1007)
-    result = Action(kind: akClose, code: code, data: reason)
+  of opClose: result = handleClose(f)
   of opText, opBinary, opContinuation:
     if maxMessage < 0 or f.payload.len > maxMessage: return failure(1009)
     if f.opcode == opContinuation:

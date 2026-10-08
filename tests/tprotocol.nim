@@ -6,6 +6,13 @@ block masking_vector:
   let wire = encodeFrame(opText, "Hello", [0x37'u8, 0xFA'u8, 0x21'u8, 0x3D'u8])
   doAssert wire == "\x81\x85\x37\xFA\x21\x3D\x7F\x9F\x4D\x51\x58"
 
+block masking_slices:
+  let key = [0x37'u8, 0xFA'u8, 0x21'u8, 0x3D'u8]
+  var buffer = ['!', '\0', '\0', '\0', '\0', '\0', '!']
+  maskInto(toOpenArray(buffer, 1, 3), "Hel", key)
+  maskInto(toOpenArray(buffer, 4, 5), @[byte('l'), byte('o')], key, offset = 3)
+  doAssert buffer == ['!', '\x7F', '\x9F', '\x4D', '\x51', '\x58', '!']
+
 block frame_lengths:
   for n in [0, 125, 126, 65535, 65536]:
     let payload = newString(n)

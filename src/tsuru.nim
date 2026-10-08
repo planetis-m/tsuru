@@ -5,7 +5,7 @@
 ## and raise ErrorCode; argument validation errors leave the connection intact.
 import std/[ioring, base64, strutils]
 import tsuru/[protocol, handshake]
-import tsuru/internal/[transport, entropy]
+import tsuru/internal/[transport, entropy, buffer]
 export handshake.Header, handshake.WebSocketOptions, handshake.initWebSocketOptions
 export ioring.Deadline, ioring.never, ioring.afterMs
 
@@ -36,19 +36,25 @@ type
     status: WebSocketState
     selectedProtocol: string
     buffer: string
-    offset: int
     fragments: MessageState
     closure: CloseInfo
 
-proc state*(ws: WebSocket): WebSocketState {.inline.} = ws.status
-proc open*(ws: WebSocket): bool {.inline.} = ws.status == wsOpen
-proc protocol*(ws: WebSocket): string {.inline.} = ws.selectedProtocol
+proc state*(ws: WebSocket): WebSocketState {.inline.} =
+  ## Current state of the connection; does not suspend.
+  ws.status
+
+proc open*(ws: WebSocket): bool {.inline.} =
+  ## Whether application messages may be sent; does not suspend.
+  ws.status == wsOpen
+
+proc protocol*(ws: WebSocket): string {.inline.} =
+  ## Negotiated subprotocol, or empty if none was selected; does not suspend.
+  ws.selectedProtocol
 
 proc release(ws: WebSocket) =
   close(ws.transport)
   ws.status = wsClosed
   ws.buffer = ""
-  ws.offset = 0
   ws.fragments = MessageState()
 
 proc terminate(ws: WebSocket; source: CloseSource; code = 1006; reason = "") =
@@ -72,39 +78,32 @@ proc transportFailed(ws: WebSocket) =
 proc budget(ws: WebSocket; dl: Deadline): Deadline =
   earlier(afterMs(ws.timeoutMs), dl)
 
-proc compact(ws: WebSocket) =
-  if ws.offset > 0:
-    if ws.offset == ws.buffer.len: ws.buffer = ""
-    else: ws.buffer = ws.buffer[ws.offset..^1]
-    ws.offset = 0
-
 proc fill(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
-  compact(ws)
   var buf = default(array[8192, char])
   let n = readSome(ws.transport, buf, dl)
-  let oldLen = ws.buffer.len
-  copyMem(beginStore(ws.buffer, oldLen + n, oldLen), addr buf[0], n)
-  endStore(ws.buffer)
+  appendBytes(ws.buffer, toOpenArray(buf, 0, n - 1))
   result = n > 0
 
-proc freshMask(key: var array[4, uint8]) {.raises.} =
-  let bytes = randomBytes(4)
-  for i in 0..3: key[i] = uint8(ord(bytes[i]))
+proc fillMaskedChunk[T: char | byte](buf: var openArray[char]; data: openArray[T];
+                                    key: array[4, uint8]; offset, prefix: int): int =
+  ## Fill the payload portion of a chunk, preserving the frame's mask position.
+  let count = min(buf.len - prefix, data.len - offset)
+  maskInto(toOpenArray(buf, prefix, prefix + count - 1),
+    toOpenArray(data, offset, offset + count - 1), key, offset)
+  result = count
 
-proc emit[T: string | seq[byte]](ws: WebSocket; op: Opcode; data: T; dl: Deadline)
-    {.passive, raises, untyped.} =
+proc emit[T: char | byte](ws: WebSocket; op: Opcode; data: openArray[T]; dl: Deadline)
+    {.passive, raises.} =
   checkDeadline(dl)
   var key = default(array[4, uint8])
-  freshMask(key)
-  let head = frameHeader(op, len(data), key)
+  fillRandom(key)
+  let head = frameHeader(op, data.len, key)
   var buf = default(array[8192, char])
-  copyMem(addr buf[0], readRawData(head), head.len)
+  copyOut(toOpenArray(buf, 0, head.len - 1), head)
   var prefix = head.len
   var off = 0
-  while prefix > 0 or off < len(data):
-    let count = min(buf.len - prefix, len(data) - off)
-    maskInto(cast[ptr UncheckedArray[char]](addr buf[prefix]),
-      toOpenArray(data, off, off + count - 1), key, off)
+  while prefix > 0 or off < data.len:
+    let count = fillMaskedChunk(buf, data, key, off, prefix)
     writeAll(ws.transport, toOpenArray(buf, 0, prefix + count - 1), dl)
     off += count
     prefix = 0
@@ -143,8 +142,7 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
     let head = result.buffer[0 .. endHead + 3]
     checkHandshake(head, key, options.protocols, result.selectedProtocol)
     checkDeadline(deadline)
-    result.offset = endHead + 4
-    compact(result)
+    dropPrefix(result.buffer, endHead + 4)
     result.status = wsOpen
   except ErrorCode as e:
     terminate(result, csTransportError)
@@ -201,7 +199,7 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive, raises.} =
     while ws.status != wsClosed:
       checkDeadline(deadline)
       var frame = Frame()
-      let parsed = parseFrame(ws.buffer, ws.offset, frame, max(ws.maxMessage, 125))
+      let parsed = parseFrame(ws.buffer, 0, frame, max(ws.maxMessage, 125))
       case parsed.status
       of psIncomplete:
         if not fill(ws, deadline):
@@ -210,7 +208,7 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive, raises.} =
       of psError: failProtocol(ws, 1002, deadline)
       of psTooLarge: failProtocol(ws, 1009, deadline)
       of psOk:
-        ws.offset += parsed.consumed
+        dropPrefix(ws.buffer, parsed.consumed)
         let action = handleFrame(ws.fragments, frame, ws.maxMessage)
         checkDeadline(deadline)
         case action.kind
@@ -218,7 +216,6 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive, raises.} =
         of akPong: emit(ws, opPong, action.data, deadline)
         of akMessage:
           if ws.status == wsOpen:
-            compact(ws)
             return Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
         of akError: failProtocol(ws, action.code, deadline)
         of akClose:

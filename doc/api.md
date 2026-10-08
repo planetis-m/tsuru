@@ -3,7 +3,8 @@
 | Import | Responsibility |
 | --- | --- |
 | `tsuru` | Connection handles, options, messages and passive operations |
-| `tsuru/protocol` | Pure framing, masking and message assembly |
+| `tsuru/frame` | Pure frame parsing, headers and masking |
+| `tsuru/protocol` | Message assembly, UTF-8 and close handling; re-exports the codec |
 | `tsuru/handshake` | URL parsing, request construction and upgrade validation |
 
 Application code normally needs only `import tsuru`.
@@ -12,7 +13,8 @@ Application code normally needs only `import tsuru`.
 `handleFrame` expects a frame accepted by `parseFrame`.
 `frameHeader` includes the four-byte mask key; `maskInto` applies that key to
 payload chunks, with `offset` measured from the start of the frame payload.
-Its destination must hold at least `source.len` writable bytes. Use a fresh
+Its destination is a mutable `openArray[char]` of at least `source.len` bytes.
+Use a fresh
 cryptographic mask for each frame. `encodeFrame` builds a complete wire string
 when a standalone encoded frame is needed.
 
@@ -32,6 +34,10 @@ the WebSocket message. The header shares the first chunk with the payload.
 
 `recv` releases consumed wire data before returning a message and retains any
 following frames for the next call. Returned payloads own their data.
+
+Socket calls, address layouts, OpenSSL bindings and bulk buffer operations live
+in `tsuru/internal`. The transport owns descriptors and TLS handles; the client
+owns unconsumed wire bytes, fragment state and the recorded close outcome.
 
 A default `WebSocket()` is closed and owns no descriptor. Create live connections
 with `connectWebSocket`.
