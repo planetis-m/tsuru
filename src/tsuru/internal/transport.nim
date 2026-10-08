@@ -1,6 +1,6 @@
 ## Nonblocking TCP and optional verified TLS. Only readiness waits park on the ring.
 ## Deadlines never leave a kernel read holding a pointer into an expired task.
-import std/[ioring, dns]
+import std/[ioring, dns, strutils]
 from std/socket import toErr
 from std/posix/posix import errno, EAGAIN, EINTR, SockAddr, TSa_Family
 
@@ -101,27 +101,25 @@ proc open*(t: var Transport; host: string; port: uint16; secure: bool;
   checkDeadline(dl)
   var hostBuf = host
   var ip = host
-  var family = 2.cint
+  var family = AF_INET
   var addressOffset = 4
   var addressLen = SockLen(16)
   if ':' in host:
-    family = 10
+    family = AF_INET6
     addressOffset = 8
     addressLen = SockLen(28)
   else:
-    var literal = true
-    for c in host:
-      if c notin {'0'..'9', '.'}: literal = false
-    if not literal: ip = resolve(host, dl)
+    if not host.allCharsInSet(Digits + {'.'}): ip = resolve(host, dl)
   var sa = Sockaddr_storage()
-  cast[ptr SockAddr](addr sa)[].sa_family = TSa_Family(family)
+  cast[ptr SockAddr](addr sa)[].sa_family = TSa_Family(ord(family))
   let raw = cast[ptr UncheckedArray[uint8]](addr sa)
   raw[2] = uint8(port shr 8)
   raw[3] = uint8(port and 255)
-  if inetPton(family, toCString(ip), addr raw[addressOffset]) != 1: raise ValueError
+  if inetPton(cint(family), toCString(ip), addr raw[addressOffset]) != 1: raise ValueError
   checkDeadline(dl)
   # Linux SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, set atomically at creation.
-  let socketFd = cSocket(family, cint(1 or 0x800 or 0x80000), 6)
+  let socketFd = cSocket(cint(family), cint(SOCK_STREAM) or O_NONBLOCK or 0x80000,
+    cint(IPPROTO_TCP))
   if socketFd < 0: raise IOError
   t.descriptor = int(socketFd) + 1
   var n = -1

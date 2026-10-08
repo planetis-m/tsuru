@@ -1,5 +1,6 @@
 ## URI parsing and HTTP upgrade validation for the client opening handshake.
 import std/[strutils, sha1, base64]
+from std/http/httpparse import parseToken
 from tsuru/protocol import DefaultMaxMessage
 
 const MaxHandshake* = 16 * 1024
@@ -35,16 +36,10 @@ proc acceptKey*(key: string): string =
   result = encode(ctx.finalize())
 
 proc validToken(s: string): bool =
-  result = s.len > 0
-  for c in s:
-    if c notin {'a'..'z', 'A'..'Z', '0'..'9', '!', '#', '$', '%', '&', '\'', '*',
-        '+', '-', '.', '^', '_', '`', '|', '~'}:
-      return false
+  s.len > 0 and parseToken(toOpenArray(s, 0, s.len - 1)) == s.len
 
 proc cleanValue(s: string): bool =
-  result = true
-  for c in s:
-    if ord(c) < 32 and c != '\t' or ord(c) == 127: return false
+  s.find({'\0'..'\x1f', '\x7f'} - {'\t'}) == -1
 
 proc parseEndpoint*(url: string): Endpoint {.raises.} =
   ## Parse ws/wss URLs; reject fragments, userinfo, whitespace and unescaped controls.
@@ -55,8 +50,7 @@ proc parseEndpoint*(url: string): Endpoint {.raises.} =
     start = 6
     secure = true
   else: raise ValueError
-  for c in url:
-    if ord(c) <= 32 or ord(c) >= 127 or c == '#' or c == '\\': raise ValueError
+  if url.find({'\0'..' ', '\x7f'..'\xff', '#', '\\'}) >= 0: raise ValueError
   var stop = start
   while stop < url.len and url[stop] != '/' and url[stop] != '?': inc stop
   if stop == start: raise ValueError
@@ -80,8 +74,7 @@ proc parseEndpoint*(url: string): Endpoint {.raises.} =
       portText = authority[colon + 1..^1]
       if portText.len == 0: raise ValueError
     else: host = authority
-    for c in host:
-      if c notin {'a'..'z', 'A'..'Z', '0'..'9', '-', '.'}: raise ValueError
+    if not host.allCharsInSet(Letters + Digits + {'-', '.'}): raise ValueError
   if host.len == 0: raise ValueError
   var port = if secure: 443 else: 80
   if portText.len > 0:
