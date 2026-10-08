@@ -13,7 +13,7 @@ type
   MessageState* = object
     ## Owns an unfinished fragmented message between handleFrame calls.
     fragmented: bool
-    binary: bool
+    binary: bool ## Between calls, meaningful only for an unfinished fragmented message.
     data: string
 
 proc validUtf8*(s: string): bool =

@@ -55,7 +55,10 @@ transitions and applies those actions; only the transport performs socket and
 TLS operations.
 
 A default `WebSocket()` is closed and owns no descriptor. Create live connections
-with `connectWebSocket`.
+with `connectWebSocket`. Receiving on a default handle returns `wmClose` with
+1006, an empty reason and `csLocal`: the handle has no live connection. This does
+not imply a peer exchange or a failed connection attempt. Setup failures are
+reported by `connectWebSocket`.
 
 `WebSocketOptions` must be constructed with `initWebSocketOptions`; an empty
 object has invalid zero limits. The library validates these fields at connect:
@@ -116,9 +119,10 @@ the exchange or when already closed; write/read failure, protocol failure,
 expiry or EOF without a Close frame return false. Repeated calls do not send
 another frame. Use `abort` for immediate teardown without a handshake.
 
-During close, `wsClosing` prevents application writes and the close operation
-owns receive processing until termination. A peer Close frame is not echoed
-again if a Close frame was already sent.
+`wsClosing` is the internal transition after writing Close; it prevents another
+Close frame from being sent. The owning task remains inside `close` until the
+connection is `wsClosed`, so callers do not observe this transition between
+operations. The close operation owns receive processing until termination.
 
 `waitClose` calls `recv` until `wmClose`, discarding application messages. One
 absolute deadline spans the entire wait, including messages and controls: the

@@ -11,11 +11,14 @@ import tsuru/internal/[transport, entropy, buffer]
 export handshake.Header, handshake.WebSocketOptions, handshake.initWebSocketOptions
 export ioring.Deadline, ioring.never, ioring.afterMs
 
-const CloseWaitMs = 250
+const
+  CloseWaitMs = 250
+  AbnormalClosure = 1006
 
 type
   WebSocketState* = enum
     wsClosed, wsOpen, wsClosing
+      ## close uses wsClosing internally and returns with wsClosed.
   MessageKind* = enum
     wmText, wmBinary, wmClose, wmTimeout
   CloseSource* = enum
@@ -27,7 +30,7 @@ type
     code*: int ## Peer or locally generated protocol status; 1006 means abnormal closure or abort.
     closeSource*: CloseSource
   CloseInfo = object
-    code: int
+    code: int ## Zero means no terminal outcome has been recorded.
     reason: string
     source: CloseSource
   WebSocket* = ref object
@@ -64,13 +67,13 @@ proc release(ws: WebSocket) =
   ws.sent = 0
   ws.fragments = MessageState()
 
-proc terminate(ws: WebSocket; source: CloseSource; code = 1006; reason = "") =
+proc terminate(ws: WebSocket; source: CloseSource; code = AbnormalClosure; reason = "") =
   ws.closure = CloseInfo(code: code, reason: reason, source: source)
   release(ws)
 
 proc closedMessage(ws: WebSocket): Message =
   Message(kind: wmClose, data: ws.closure.reason,
-    code: (if ws.closure.code == 0: 1006 else: ws.closure.code),
+    code: (if ws.closure.code == 0: AbnormalClosure else: ws.closure.code),
     closeSource: ws.closure.source)
 
 proc abort*(ws: WebSocket) =
