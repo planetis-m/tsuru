@@ -43,6 +43,9 @@ once, values remain strings, and duplicate fields stay in wire order.
 `response.header(name, default)` returns the first value; iterate headers for
 fields such as Set-Cookie. Status codes including 4xx/5xx are ordinary responses;
 redirect responses are returned for the caller to act on.
+With the default fallback `""`, a missing field and an empty value both return
+`""`. Iterate the header records when that distinction matters; repeated fields
+also remain available there.
 
 Response framing follows [RFC 9112 §6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3):
 HEAD, informational, 204 and 304 responses have no body; other responses use a
@@ -63,6 +66,10 @@ and every body read. Body calls can only tighten that stored instant via
 `earlier`; a later deadline cannot renew it. Setup takes its own explicit
 deadline. Pass the same instant to connect and request to bound them together.
 Passing `never` explicitly chooses an unbounded operation.
+`HttpOptions` contains limits and TLS settings; it has no relative timeout.
+The caller computes the budget for each exchange. WebSocket's configured
+operation timeout supplies a default for repeated stream operations, while an
+explicit deadline can tighten each wait.
 
 HTTP failures raise ErrorCode: incomplete messages use EndOfStreamError,
 malformed framing SyntaxError, limits ContentTooLong and expiry TimeoutError.
@@ -70,8 +77,16 @@ Socket/TLS failures use IOError; an abrupt TLS shutdown is a transport failure.
 Exchange failures release the connection. Invalid caller inputs and requesting
 before consuming the prior body are rejected before I/O, leaving it usable.
 
+A server may close an idle keep-alive connection between requests. A failed
+request releases that connection and raises; the client never reconnects or
+replays automatically, including for idempotent methods. An error does not prove
+the server received nothing. The caller decides whether to reconnect and retry,
+using the original deadline to keep the total attempt budget bounded.
+
 WebSocket receive expiry remains `None` with state preserved; a command's
 deadline does not end its message stream. HTTP expiry ends the active exchange.
+HTTP exchange errors deliberately raise at the caller's request boundary;
+WebSocket live operations return write outcomes and stream termination values.
 The transport makes direct nonblocking calls and parks only on readiness, so
 expiry leaves no kernel read holding caller storage. Scheduling and cancellation
 remain in `std/ioring`.
