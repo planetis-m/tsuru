@@ -79,9 +79,9 @@ def echo(sock):
     handshake(sock)
     while True:
         op, data = read_frame(sock)
-        sock.sendall(frame(10 if op == 9 else op, data))
         if op == 8:
             return
+        sock.sendall(frame(10 if op == 9 else op, data))
 
 
 def fixture(sock, mode, wire=None, code=1002):
@@ -120,9 +120,14 @@ def fixture(sock, mode, wire=None, code=1002):
         handshake(sock, protocols=True, suffix=frame(1, b"ready") + frame(2, b"\x00\xff"))
         op, data = read_frame(sock)
         assert op == 8
-        sock.sendall(frame(8, data))
+        assert sock.recv(1) == b""
         return
-    if mode in ("read-timeout", "write-timeout", "close-timeout"):
+    if mode == "close-without-reply":
+        handshake(sock)
+        assert read_frame(sock) == (8, struct.pack("!H", 1000) + b"done")
+        assert sock.recv(1) == b"", "close must release without waiting for a reply"
+        return
+    if mode in ("read-timeout", "write-timeout"):
         handshake(sock)
         time.sleep(0.7)
         return
@@ -177,7 +182,7 @@ def main():
     args = parser.parse_args()
     binary = args.binary.resolve()
     for mode in ("echo", "drop", "fragments", "empty-close", "eof", "protocols",
-                 "bad-upgrade", "handshake-timeout", "read-timeout", "write-timeout", "close-timeout"):
+                 "bad-upgrade", "handshake-timeout", "read-timeout", "write-timeout", "close-without-reply"):
         run_case(binary, mode)
     for wire, code in [(b"\x81\x80", 1002), (frame(1, b"\xff"), 1007),
                        (frame(0, b"orphan"), 1002), (frame(8, b"x"), 1002),

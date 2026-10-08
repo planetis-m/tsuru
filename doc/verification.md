@@ -13,8 +13,9 @@ decode client masking without using this library's codec. Plain tests cover
 empty/short/extended-length text, binary bytes, automatic pongs, fragmented
 UTF-8, bytewise frame delivery, an upgrade and frame in one write, subprotocols,
 custom headers, explicit/empty/abnormal closes, malformed frames and text,
-message limits, handshake/read/write/close deadlines, automatic descriptor
-release, localhost DNS, and IPv6 literals. The plain build also checks that
+message limits, handshake/read/write deadlines, close without a peer reply,
+boolean write results, recorded receive outcomes, automatic descriptor release,
+localhost DNS, and IPv6 literals. The plain build also checks that
 `wss://` raises `UnimplementedOperation` before attempting TCP.
 
 TLS tests cover round trips with a trusted temporary certificate for an IP and

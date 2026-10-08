@@ -1,8 +1,9 @@
 ## A sequential, passive WebSocket client for Nimony on Linux.
 ##
 ## Own each connection from one task. recv automatically answers ping frames and
-## assembles fragmented messages. Transport errors and timeouts close the socket
-## and raise ErrorCode. Callers supply valid outgoing text and control payloads.
+## assembles fragmented messages. send, ping and close report success as a bool;
+## recv reports closure as wmClose. Connection setup raises ErrorCode on failure.
+## Callers supply valid outgoing text and control payloads.
 import std/[ioring, base64, strutils]
 import tsuru/[frame, protocol, handshake]
 import tsuru/internal/[transport, entropy, buffer]
@@ -11,7 +12,7 @@ export ioring.Deadline, ioring.never, ioring.afterMs
 
 type
   WebSocketState* = enum
-    wsClosed, wsOpen, wsClosing
+    wsClosed, wsOpen
   MessageKind* = enum
     wmText, wmBinary, wmClose
   CloseSource* = enum
@@ -22,7 +23,7 @@ type
     data*: string
       ## Message payload, or a close reason.
     code*: int
-      ## Peer or locally generated protocol status; 1006 means abnormal/local closure.
+      ## Peer or locally supplied close status; 1006 means closure without a status.
     closeSource*: CloseSource
   CloseInfo = object
     code: int
@@ -86,21 +87,33 @@ proc fill(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
   appendBytes(ws.buffer, toOpenArray(ws.readBuffer, 0, n - 1))
   result = n > 0
 
-proc emit(ws: WebSocket; op: Opcode; data: string; dl: Deadline) {.passive, raises.} =
-  checkDeadline(dl)
-  var key = default(array[4, uint8])
-  fillRandom(key)
-  encodeFrame(ws.sendBuffer, op, data, key)
-  writeAll(ws.transport,
-    toOpenArray(readRawData(ws.sendBuffer), 0, ws.sendBuffer.len - 1), dl)
+proc emit(ws: WebSocket; op: Opcode; data: string; dl: Deadline): bool {.passive.} =
+  if ws.status == wsClosed: return false
+  try:
+    checkDeadline(dl)
+    var key = default(array[4, uint8])
+    fillRandom(key)
+    encodeFrame(ws.sendBuffer, op, data, key)
+    writeAll(ws.transport,
+      toOpenArray(readRawData(ws.sendBuffer), 0, ws.sendBuffer.len - 1), dl)
+    result = true
+  except ErrorCode:
+    transportFailed(ws)
+    result = false
 
-proc emit(ws: WebSocket; op: Opcode; data: seq[byte]; dl: Deadline) {.passive, raises.} =
-  checkDeadline(dl)
-  var key = default(array[4, uint8])
-  fillRandom(key)
-  encodeFrame(ws.sendBuffer, op, data, key)
-  writeAll(ws.transport,
-    toOpenArray(readRawData(ws.sendBuffer), 0, ws.sendBuffer.len - 1), dl)
+proc emit(ws: WebSocket; op: Opcode; data: seq[byte]; dl: Deadline): bool {.passive.} =
+  if ws.status == wsClosed: return false
+  try:
+    checkDeadline(dl)
+    var key = default(array[4, uint8])
+    fillRandom(key)
+    encodeFrame(ws.sendBuffer, op, data, key)
+    writeAll(ws.transport,
+      toOpenArray(readRawData(ws.sendBuffer), 0, ws.sendBuffer.len - 1), dl)
+    result = true
+  except ErrorCode:
+    transportFailed(ws)
+    result = false
 
 proc prepareHandshake(url: string; options: WebSocketOptions; endpoint: var Endpoint;
                       key, request: var string) {.raises.} =
@@ -142,51 +155,33 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
     terminate(result, csTransportError)
     raise e
 
-proc send*(ws: WebSocket; data: string; binary = false; dl = never) {.passive, raises.} =
+proc send*(ws: WebSocket; data: string; binary = false; dl = never): bool {.passive.} =
   ## Send one masked message. The caller supplies valid UTF-8 for text messages.
-  if ws.status != wsOpen: raise BadOperation
-  let deadline = budget(ws, dl)
-  try:
-    emit(ws, (if binary: opBinary else: opText), data, deadline)
-  except ErrorCode as e:
-    transportFailed(ws)
-    raise e
+  ## Return false on a closed connection or failed write; failures release it.
+  result = emit(ws, (if binary: opBinary else: opText), data, budget(ws, dl))
 
-proc send*(ws: WebSocket; data: seq[byte]; dl = never) {.passive, raises.} =
+proc send*(ws: WebSocket; data: seq[byte]; dl = never): bool {.passive.} =
   ## Send one binary message without converting bytes to a string.
-  if ws.status != wsOpen: raise BadOperation
-  let deadline = budget(ws, dl)
-  try:
-    emit(ws, opBinary, data, deadline)
-  except ErrorCode as e:
-    transportFailed(ws)
-    raise e
+  ## Return false on a closed connection or failed write; failures release it.
+  result = emit(ws, opBinary, data, budget(ws, dl))
 
-proc ping*(ws: WebSocket; data = ""; dl = never) {.passive, raises.} =
+proc ping*(ws: WebSocket; data = ""; dl = never): bool {.passive.} =
   ## Send a ping of at most 125 bytes. recv consumes pong replies.
-  if ws.status != wsOpen: raise BadOperation
-  let deadline = budget(ws, dl)
-  try:
-    emit(ws, opPing, data, deadline)
-  except ErrorCode as e:
-    transportFailed(ws)
-    raise e
+  ## Return false on a closed connection or failed write; failures release it.
+  result = emit(ws, opPing, data, budget(ws, dl))
 
-proc failProtocol(ws: WebSocket; code: int; dl: Deadline) {.passive, raises.} =
-  if ws.status == wsOpen:
-    try: emit(ws, opClose, closeBody(code), dl)
-    except ErrorCode: discard
-  terminate(ws, csProtocolError, code)
-  if code == 1009: raise ContentTooLong
-  raise ValueError
+proc failProtocol(ws: WebSocket; code: int; dl: Deadline): Message {.passive.} =
+  ws.closure = CloseInfo(code: code, source: csProtocolError)
+  if emit(ws, opClose, closeBody(code), dl): release(ws)
+  result = closedMessage(ws)
 
-proc recv*(ws: WebSocket; dl = never): Message {.passive, raises.} =
+proc recv*(ws: WebSocket; dl = never): Message {.passive.} =
   ## Receive a complete message or wmClose. One deadline spans fragments and pings.
-  ## A valid peer close is echoed exactly and releases the socket. EOF returns 1006.
+  ## Peer close, EOF, protocol failure and I/O failure all release the socket.
   if ws.status == wsClosed: return closedMessage(ws)
   let deadline = budget(ws, dl)
   try:
-    while ws.status != wsClosed:
+    while true:
       checkDeadline(deadline)
       var frame = Frame()
       let parsed = parseFrame(ws.buffer, 0, frame, max(ws.maxMessage, 125))
@@ -195,39 +190,30 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive, raises.} =
         if not fill(ws, deadline):
           terminate(ws, csEof)
           return closedMessage(ws)
-      of psError: failProtocol(ws, 1002, deadline)
-      of psTooLarge: failProtocol(ws, 1009, deadline)
+      of psError: return failProtocol(ws, 1002, deadline)
+      of psTooLarge: return failProtocol(ws, 1009, deadline)
       of psOk:
         dropPrefix(ws.buffer, parsed.consumed)
         let action = handleFrame(ws.fragments, frame, ws.maxMessage)
         checkDeadline(deadline)
         case action.kind
         of akNone: discard
-        of akPong: emit(ws, opPong, action.data, deadline)
+        of akPong:
+          if not emit(ws, opPong, action.data, deadline): return closedMessage(ws)
         of akMessage:
-          if ws.status == wsOpen:
-            return Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
-        of akError: failProtocol(ws, action.code, deadline)
+          return Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
+        of akError: return failProtocol(ws, action.code, deadline)
         of akClose:
           ws.closure = CloseInfo(code: action.code, reason: action.data, source: csPeer)
-          if ws.status == wsOpen: emit(ws, opClose, frame.payload, deadline)
-          release(ws)
+          if emit(ws, opClose, frame.payload, deadline): release(ws)
           return closedMessage(ws)
+  except ErrorCode:
+    transportFailed(ws)
     result = closedMessage(ws)
-  except ErrorCode as e:
-    transportFailed(ws)
-    raise e
 
-proc close*(ws: WebSocket; code = 1000; reason = ""; dl = never) {.passive, raises.} =
-  ## Send close and await the peer's close, bounded by five seconds and dl.
-  ## Idempotent once closed; abort releases the socket without waiting.
-  if ws.status == wsClosed: return
-  let deadline = earlier(budget(ws, dl), afterMs(5000))
-  try:
-    if ws.status == wsOpen:
-      emit(ws, opClose, closeBody(code, reason), deadline)
-      ws.status = wsClosing
-    while ws.status != wsClosed: discard recv(ws, deadline)
-  except ErrorCode as e:
-    transportFailed(ws)
-    raise e
+proc close*(ws: WebSocket; code = 1000; reason = ""; dl = never): bool {.passive.} =
+  ## Write a close frame and release the connection. Do not await a peer reply.
+  ## Return false on write failure, true on success or when already closed.
+  if ws.status == wsClosed: return true
+  result = emit(ws, opClose, closeBody(code, reason), budget(ws, dl))
+  if result: terminate(ws, csLocal, code, reason)

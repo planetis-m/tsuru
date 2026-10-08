@@ -24,7 +24,7 @@ proc main(url, token, subprotocol, caFile: string) {.passive.} =
       of wmClose:
         echo "Closed: ", message.closeSource, " ", message.code, " ", message.data
   except ErrorCode as e:
-    echo "WebSocket error: ", e
+    echo "Connection failed: ", e
     atomicStore(failed, 1)
   atomicStore(done, 1)
 

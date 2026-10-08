@@ -1,7 +1,8 @@
 # Working on Tsuru
 
 This is a Nimony library. Read installed stdlib declarations before using them.
-Errors are `ErrorCode`; scheduling and I/O use `.passive`.
+Connection setup raises `ErrorCode`; live sends and close return bool, and
+receive reports closure as `wmClose`. Scheduling and I/O use `.passive`.
 
 Build and check with `tests/run --network`. Test TLS changes with
 `tests/run --tls --network` and resource/I/O changes with

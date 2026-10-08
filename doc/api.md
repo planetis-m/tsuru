@@ -68,7 +68,7 @@ Each operation accepts an absolute `Deadline` as `dl`. Its effective deadline
 is the earlier of that instant and `afterMs(options.timeoutMs)`. Deadlines start
 fresh for each call, including preparation and buffered receive processing.
 An expired deadline closes a live connection even when the complete message is
-already buffered. The close handshake is also capped at five seconds.
+already buffered.
 
 For a quiet connection, choose a receive budget that fits the application's
 expected idle periods. Incoming pings and pongs do not restart that budget.
@@ -86,26 +86,42 @@ Empty text/binary messages are normal messages, distinct from closure. After a
 close, repeated receives return the recorded result. `closeSource` distinguishes
 `csPeer`, `csEof`, `csLocal`, `csProtocolError` and `csTransportError`. Only `csPeer`
 reports a close received from the peer. A local protocol failure records the
-locally selected close code; abort, EOF and transport failure use 1006.
-An idempotent abort preserves an already recorded result.
+locally selected close code; a successful local close records its supplied code
+and reason. Abort, EOF and transport failure use 1006. An idempotent abort
+preserves an already recorded result.
+
+`send` and `ping` return true after writing their frame, or false when already
+closed or when a write fails. `close` writes its frame and releases the socket
+without waiting for the peer's reply. It returns true on success or when already
+closed, and false on write failure. Successful writes mean the transport accepted
+the frame, not that the peer acknowledged it.
+
+Live operations do not raise `ErrorCode`. Read failures and timeouts return
+`wmClose` with code 1006 and `csTransportError`; write failures return false.
+Both release the connection. Malformed peer frames and close payloads return
+`wmClose` with code 1002, malformed UTF-8 with 1007, and exceeded receive limits
+with 1009. These use `csProtocolError` and attempt a close frame before release.
+If a peer close or protocol failure was already recorded, a failed close reply
+preserves that outcome.
+
+`connectWebSocket` raises `ErrorCode` on setup failure and releases any resources
+it acquired:
 
 | ErrorCode | Typical cause | Connection effect |
 | --- | --- | --- |
-| `ValueError` | Invalid URL/options | No connection created |
-| `ValueError` | Rejected upgrade or malformed peer frame/text | Closed; protocol close attempted for frame errors |
-| `ContentTooLong` | Oversized handshake, peer frame or fragmented message | Closed; frame/message violations attempt close 1009 |
-| `BadOperation` | Send or ping after closing | Unchanged |
-| `TimeoutError` | Deadline exhausted | Closed |
+| `ValueError` | Invalid URL/options or rejected upgrade | No established connection |
+| `ContentTooLong` | Oversized HTTP upgrade response | Closed |
+| `TimeoutError` | Setup deadline exhausted | Closed if a connection was created |
 | `EndOfStreamError` | Peer disappeared during HTTP upgrade | Closed |
 | `IOError` | Socket, randomness, trust-file or TLS I/O failure | Closed if a connection was created |
 | `PermissionDenied` | TLS negotiation/certificate verification rejected | Closed |
 | `NameNotFound` | DNS name not found | No established connection |
 | `UnimplementedOperation` | `wss://` without `-d:tsuruTls` | No connection created |
 
-A normal transport EOF during `recv` produces `wmClose` with code 1006.
-Malformed close payloads and frames trigger close 1002; malformed UTF-8 triggers
-1007. Ping and close replies use fresh masks from Linux `getrandom`, as do all
-application frames. Failure to obtain randomness fails the operation.
+A normal transport EOF during `recv` produces `wmClose` with code 1006 and
+`csEof`. Ping and close replies use fresh masks from Linux `getrandom`, as do all
+application frames. Failure to obtain randomness fails the write and releases
+the connection.
 
 The HTTP response must be HTTP/1.1 status 101 with the required upgrade tokens
 and the exact accept key. Duplicate accept/subprotocol fields, unsolicited

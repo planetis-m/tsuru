@@ -9,15 +9,20 @@ proc main(url: string) {.passive.} =
   try:
     let ws = connectWebSocket(url)
     defer: ws.abort()
-    ws.send("Hello from Nimony")
-    let message = ws.recv()
-    if message.kind != wmText or message.data != "Hello from Nimony":
-      echo "unexpected echo"
+    if not ws.send("Hello from Nimony"):
+      echo "send failed"
       atomicStore(failed, 1)
-    else: echo message.data
-    ws.close()
+    else:
+      let message = ws.recv()
+      if message.kind != wmText or message.data != "Hello from Nimony":
+        echo "unexpected echo"
+        atomicStore(failed, 1)
+      else: echo message.data
+      if not ws.close():
+        echo "close failed"
+        atomicStore(failed, 1)
   except ErrorCode as e:
-    echo "WebSocket error: ", e
+    echo "Connection failed: ", e
     atomicStore(failed, 1)
   atomicStore(done, 1)
 

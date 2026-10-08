@@ -12,12 +12,12 @@ proc chat() {.passive.} =
   try:
     let ws = connectWebSocket("ws://127.0.0.1:8080/")
     defer: ws.abort()
-    ws.send("Hello from Nimony")
+    if not ws.send("Hello from Nimony"): return
     let message = ws.recv()
     # message.kind is wmText, wmBinary, or wmClose; message.data holds its payload.
-    ws.close()
+    discard ws.close()
   except ErrorCode as e:
-    discard e # Handle connection, handshake, protocol, or timeout errors here.
+    discard e # Handle connection setup errors here.
 ```
 
 Run the task on `std/threadpool` with `submit(delay chat())`. The complete
@@ -71,17 +71,18 @@ options.headers = @[Header(name: "Authorization", value: "Bearer token")]
 let ws = connectWebSocket("ws://localhost:8080/chat", options)
 ```
 
-Call from a passive procedure inside `try`, or propagate errors with `{.raises.}`.
+Connection setup requires a passive procedure inside `try`, or `{.raises.}`
+to propagate setup errors. Live operations return their outcome directly.
 Custom headers cannot replace handshake fields or add an HTTP request body.
 
 | Operation | Behavior |
 | --- | --- |
 | `connectWebSocket(url, options, dl)` | TCP/TLS connection and validated HTTP upgrade |
-| `ws.send(data, binary = false, dl)` | One masked message; caller supplies valid UTF-8 for text |
-| `ws.send(bytes: seq[byte], dl)` | Send one binary message without converting bytes to a string |
+| `ws.send(data, binary = false, dl)` | One masked message; returns success as a bool |
+| `ws.send(bytes: seq[byte], dl)` | Binary message without converting bytes to a string; returns bool |
 | `ws.recv(dl)` | Complete text/binary message or `wmClose`; answers pings automatically |
-| `ws.ping(data = "", dl)` | Ping payload of at most 125 bytes; `recv` consumes pongs |
-| `ws.close(code = 1000, reason = "", dl)` | Send close and wait up to five seconds for the peer |
+| `ws.ping(data = "", dl)` | Send a ping; returns bool; `recv` consumes pongs |
+| `ws.close(code = 1000, reason = "", dl)` | Send close and release immediately; returns bool |
 | `ws.abort()` | Release resources immediately; idempotent |
 | `ws.open`, `ws.state`, `ws.protocol` | Connection status and negotiated subprotocol |
 
@@ -94,7 +95,7 @@ Receive limits default to 16 MiB and also bound assembled fragments.
 Binary sequences can be sent directly:
 
 ```nim
-ws.send(@[0'u8, 255'u8, 128'u8])
+if not ws.send(@[0'u8, 255'u8, 128'u8]): return
 ```
 
 Sends copy and mask the payload in one pass into a reusable wire string, then
@@ -125,10 +126,12 @@ DNS uses Nimony's IPv4 resolver; IPv6 literals such as `ws://[::1]:8080/` work.
 All network operations require the C backend.
 
 On peer close, `recv` returns its code and reason and echoes its close payload.
-Code `1005` means the peer omitted a status; `1006` means EOF without a close
-frame. `message.closeSource` identifies peer closure, EOF, local abort, local
-protocol failure or transport failure. Transport errors and timeouts raise
-`ErrorCode` and release the socket.
+Code `1005` means the peer omitted a status; `1006` means closure without a
+close status. `message.closeSource` identifies peer closure, EOF, local close,
+protocol failure or transport failure. Live operations release the socket on
+failure: send and ping return false, and receive returns `wmClose`. Close
+returns true after writing its frame or if already closed; it returns false
+on a failed write. It does not wait for the peer's reply.
 Callers supply valid outgoing text and control payloads. More detail:
 [API and error contracts](doc/api.md).
 
