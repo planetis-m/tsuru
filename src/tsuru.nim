@@ -1,11 +1,13 @@
 ## A sequential, passive WebSocket client for Nimony on Linux.
 ##
 ## Own each connection from one task. recv automatically answers ping frames and
-## assembles fragmented messages. send, ping and close report success as a bool;
-## recv reports ordinary deadline expiry as wmTimeout and termination as wmClose.
-## close completes a bounded handshake. Connection setup raises ErrorCode on failure.
+## assembles fragmented messages. send and ping report success as a bool;
+## recv returns an optional message, with None on ordinary deadline expiry.
+## close completes a bounded handshake and returns its terminal message.
+## Connection setup raises ErrorCode on failure.
+## Run parking operations in a passive task submitted to the application's pool.
 ## Callers supply valid outgoing text and control payloads.
-import std/[ioring, base64, strutils]
+import std/[ioring, base64, strutils, opt]
 import tsuru/[frame, protocol, handshake]
 import tsuru/internal/[transport, entropy, buffer]
 export handshake.Header, handshake.WebSocketOptions, handshake.initWebSocketOptions
@@ -17,10 +19,11 @@ const
 
 type
   WebSocketState* = enum
-    wsClosed, wsOpen, wsClosing
-      ## close uses wsClosing internally and returns with wsClosed.
+    wsClosed, wsOpen
+  ConnectionPhase = enum
+    connClosed, connOpen, connClosing
   MessageKind* = enum
-    wmText, wmBinary, wmClose, wmTimeout
+    wmText, wmBinary, wmClose
   CloseSource* = enum
     csLocal, csPeer, csEof, csProtocolError, csTransportError, csTimeout
       ## Why the connection ended; only meaningful for wmClose.
@@ -38,7 +41,7 @@ type
     transport: Transport
     maxMessage: int
     timeoutMs: int
-    status: WebSocketState
+    status: ConnectionPhase
     selectedProtocol: string
     buffer: string
     readBuffer: array[8192, byte]
@@ -49,11 +52,11 @@ type
 
 proc state*(ws: WebSocket): WebSocketState {.inline.} =
   ## Current state of the connection; does not suspend.
-  ws.status
+  if ws.status == connClosed: wsClosed else: wsOpen
 
 proc open*(ws: WebSocket): bool {.inline.} =
   ## Whether application messages may be sent; does not suspend.
-  ws.status == wsOpen
+  ws.status == connOpen
 
 proc protocol*(ws: WebSocket): string {.inline.} =
   ## Negotiated subprotocol, or empty if none was selected; does not suspend.
@@ -61,7 +64,7 @@ proc protocol*(ws: WebSocket): string {.inline.} =
 
 proc release(ws: WebSocket) =
   close(ws.transport)
-  ws.status = wsClosed
+  ws.status = connClosed
   ws.buffer = ""
   ws.sendBuffer = ""
   ws.sent = 0
@@ -78,7 +81,7 @@ proc closedMessage(ws: WebSocket): Message =
 
 proc abort*(ws: WebSocket) =
   ## Release immediately without a close handshake. Preserve an existing close result.
-  if ws.status != wsClosed: terminate(ws, csLocal)
+  if ws.status != connClosed: terminate(ws, csLocal)
 
 proc transportFailed(ws: WebSocket; error: ErrorCode) =
   if ws.closure.code == 0:
@@ -163,7 +166,7 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
     checkHandshake(head, key, options.protocols, result.selectedProtocol)
     checkDeadline(deadline)
     dropPrefix(result.buffer, endHead + 4)
-    result.status = wsOpen
+    result.status = connOpen
   except ErrorCode as e:
     terminate(result, csTransportError)
     raise e
@@ -171,32 +174,32 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
 proc send*(ws: WebSocket; data: string; binary = false; dl = never): bool {.passive.} =
   ## Send one masked message. The caller supplies valid UTF-8 for text messages.
   ## Return false unless open, or on a failed write; failures release it.
-  if ws.status != wsOpen: return false
+  if ws.status != connOpen: return false
   result = emit(ws, (if binary: opBinary else: opText), data, budget(ws, dl))
 
 proc send*(ws: WebSocket; data: seq[byte]; dl = never): bool {.passive.} =
   ## Send one binary message without converting bytes to a string.
   ## Return false unless open, or on a failed write; failures release it.
-  if ws.status != wsOpen: return false
+  if ws.status != connOpen: return false
   result = emit(ws, opBinary, data, budget(ws, dl))
 
 proc ping*(ws: WebSocket; data = ""; dl = never): bool {.passive.} =
   ## Send a ping of at most 125 bytes. recv consumes pong replies.
   ## Return false unless open, or on a failed write; failures release it.
-  if ws.status != wsOpen: return false
+  if ws.status != connOpen: return false
   result = emit(ws, opPing, data, budget(ws, dl))
 
 proc failProtocol(ws: WebSocket; code: int; dl: Deadline): Message {.passive.} =
   ws.closure = CloseInfo(code: code, source: csProtocolError)
-  if ws.status == wsClosing or emit(ws, opClose, closeBody(code), dl): release(ws)
+  if ws.status == connClosing or emit(ws, opClose, closeBody(code), dl): release(ws)
   result = closedMessage(ws)
 
-proc recv*(ws: WebSocket; dl = never): Message {.passive.} =
-  ## Receive a complete message, wmTimeout, or terminal wmClose.
+proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
+  ## Receive Some(complete message or terminal wmClose), or None on deadline expiry.
   ## One deadline spans fragments and pings. Expiry preserves the live connection,
   ## partial input and pending control output for the next operation.
   ## Peer close, EOF, protocol failure and I/O failure all release the socket.
-  if ws.status == wsClosed: return closedMessage(ws)
+  if ws.status == connClosed: return some(closedMessage(ws))
   let deadline = budget(ws, dl)
   try:
     while true:
@@ -208,9 +211,9 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive.} =
       of psIncomplete:
         if not fill(ws, deadline):
           terminate(ws, csEof)
-          return closedMessage(ws)
-      of psError: return failProtocol(ws, 1002, deadline)
-      of psTooLarge: return failProtocol(ws, 1009, deadline)
+          return some(closedMessage(ws))
+      of psError: return some(failProtocol(ws, 1002, deadline))
+      of psTooLarge: return some(failProtocol(ws, 1009, deadline))
       of psOk:
         checkDeadline(deadline)
         dropPrefix(ws.buffer, parsed.consumed)
@@ -221,39 +224,33 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive.} =
           prepareFrame(ws, opPong, action.data)
           flush(ws, deadline)
         of akMessage:
-          return Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
-        of akError: return failProtocol(ws, action.code, deadline)
+          return some(Message(kind: (if action.binary: wmBinary else: wmText), data: action.data))
+        of akError: return some(failProtocol(ws, action.code, deadline))
         of akClose:
           ws.closure = CloseInfo(code: action.code, reason: action.data, source: csPeer)
-          if ws.status == wsClosing or emit(ws, opClose, frame.payload, deadline): release(ws)
-          return closedMessage(ws)
+          if ws.status == connClosing or emit(ws, opClose, frame.payload, deadline): release(ws)
+          return some(closedMessage(ws))
   except ErrorCode as e:
     if e == TimeoutError:
-      result = Message(kind: wmTimeout)
+      result = none[Message]()
     else:
       transportFailed(ws, e)
-      result = closedMessage(ws)
+      result = some(closedMessage(ws))
 
-proc close*(ws: WebSocket; code = 1000; reason = ""; dl = never): bool {.passive.} =
+proc close*(ws: WebSocket; code = 1000; reason = ""; dl = never): Message {.passive.} =
   ## Send Close and await its reply within 250 ms, the operation budget and dl.
-  ## Always release. Return true on a peer Close or if already closed, false on failure.
+  ## Always release and return the terminal outcome; csPeer means a peer Close arrived.
+  ## Return the recorded outcome if already closed.
   ## abort releases immediately without a handshake.
-  if ws.status == wsClosed: return true
+  if ws.status == connClosed: return closedMessage(ws)
   let deadline = earlier(afterMs(min(ws.timeoutMs, CloseWaitMs)), dl)
-  if ws.status == wsOpen:
-    if not emit(ws, opClose, closeBody(code, reason), deadline): return false
-    ws.status = wsClosing
-  result = waitClose(ws, deadline).closeSource == csPeer
-
-proc waitClose*(ws: WebSocket; dl = never): Message {.passive.} =
-  ## Receive until wmClose, discarding application messages and answering pings.
-  ## Bound the wait by 250 ms, the operation budget and dl. Do not initiate close.
-  ## Return the recorded result if closed; timeout releases with code 1006 and csTimeout.
-  if ws.status == wsClosed: return closedMessage(ws)
-  let deadline = earlier(afterMs(min(ws.timeoutMs, CloseWaitMs)), dl)
+  if ws.status == connOpen:
+    if not emit(ws, opClose, closeBody(code, reason), deadline): return closedMessage(ws)
+    ws.status = connClosing
   while true:
-    let message = recv(ws, deadline)
-    if message.kind == wmClose: return message
-    if message.kind == wmTimeout:
+    case recv(ws, deadline)
+    of Some(message):
+      if message.kind == wmClose: return message
+    of None():
       terminate(ws, csTimeout)
       return closedMessage(ws)

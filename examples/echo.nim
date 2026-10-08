@@ -1,5 +1,5 @@
 ## Round trip a message against a WebSocket echo server.
-import std/[cmdline, syncio, threadpool, ioring, atomics]
+import std/[cmdline, syncio, threadpool, ioring, atomics, opt]
 import tsuru
 
 var done: int
@@ -13,12 +13,16 @@ proc main(url: string) {.passive.} =
       echo "send failed"
       atomicStore(failed, 1)
     else:
-      let message = ws.recv()
-      if message.kind != wmText or message.data != "Hello from Nimony":
-        echo "unexpected echo"
+      case ws.recv()
+      of Some(message):
+        if message.kind != wmText or message.data != "Hello from Nimony":
+          echo "unexpected echo"
+          atomicStore(failed, 1)
+        else: echo message.data
+      of None():
+        echo "echo deadline expired"
         atomicStore(failed, 1)
-      else: echo message.data
-      if not ws.close():
+      if ws.close().closeSource != csPeer:
         echo "close failed"
         atomicStore(failed, 1)
   except ErrorCode as e:

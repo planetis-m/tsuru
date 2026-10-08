@@ -7,7 +7,7 @@
 | `tsuru/protocol` | Message assembly, UTF-8 and close handling |
 | `tsuru/handshake` | URL parsing, request construction and upgrade validation |
 
-Application code normally needs only `import tsuru`.
+Application code uses `import tsuru` and `import std/opt` to match receive results.
 
 `buildRequest` expects the endpoint returned by `parseEndpoint` and a base64 nonce.
 `handleFrame` expects a frame accepted by `parseFrame`.
@@ -25,6 +25,9 @@ needed when each task owns its own connection. Do not abort a connection from
 another task while an operation is suspended. The handle releases its transport
 when its last reference goes away; explicit `abort` gives deterministic cleanup.
 The library never shuts down the shared worker pool.
+Start a parking call chain with `submit(delay(task(...)))` on the worker pool.
+Every caller in that chain must be passive so its local values survive suspension.
+Regular helpers may prepare buffers or validate data without parking.
 
 `send(string, binary = false, dl)` sends text by default; `binary = true` sends
 the string's bytes unchanged as binary. `send(seq[byte], dl)` sends binary and
@@ -55,7 +58,7 @@ transitions and applies those actions; only the transport performs socket and
 TLS operations.
 
 A default `WebSocket()` is closed and owns no descriptor. Create live connections
-with `connectWebSocket`. Receiving on a default handle returns `wmClose` with
+with `connectWebSocket`. Receiving on a default handle returns `Some(wmClose)` with
 1006, an empty reason and `csLocal`: the handle has no live connection. This does
 not imply a peer exchange or a failed connection attempt. Setup failures are
 reported by `connectWebSocket`.
@@ -72,18 +75,18 @@ object has invalid zero limits. The library validates these fields at connect:
 Each operation accepts an absolute `Deadline` as `dl`. Its effective deadline
 is the earlier of that instant and `afterMs(options.timeoutMs)`. Deadlines start
 fresh for each call, including preparation and buffered receive processing.
-Receive expiry returns `wmTimeout` and keeps the connection open, including
+Receive expiry returns `None` and keeps the connection open, including
 when a message is partially assembled or a complete frame is already buffered.
 Input and fragment state are preserved for the next call. A paused automatic
 pong retains its wire bytes and output cursor; the next receive or send finishes
 that frame before encoding another. Partial application sends cannot be retried
 safely, so send/ping expiry releases the connection and returns false.
-Close and waitClose cap their I/O deadlines at 250 ms and release on expiry.
+Close caps its I/O deadline at 250 ms and releases on expiry.
 
 For a quiet connection, choose a receive budget that fits the application's
 expected idle periods. Incoming pings and pongs do not restart that budget.
 `recv` may suspend while reading fragments or writing a pong or close reply;
-`send`, `ping`, `close`, `waitClose` and `connectWebSocket` may also suspend.
+`send`, `ping`, `close` and `connectWebSocket` may also suspend.
 `abort`, `state`, `open` and `protocol` never suspend. Calling `ping` does not start a background
 reader; pong replies are consumed during subsequent receives.
 
@@ -91,7 +94,10 @@ The [receive example](../examples/receive.nim) combines authentication,
 subprotocol negotiation, optional custom CA trust and a five-minute receive
 budget. Its connection setup has a separate ten-second deadline.
 
-`recv` returns `Message(kind, data, code)`. `code` is meaningful for `wmClose`.
+`recv` returns `Opt[Message]` using Nimony's native `std/opt` sum type. Match it
+with `case result`, `of Some(message)` and `of None()`; both cases are non-raising.
+`Some` contains a complete text/binary message or terminal close, and `None`
+means the receive deadline expired. `Message.code` is meaningful for `wmClose`.
 Empty text/binary messages are normal messages, distinct from closure. After a
 close, repeated receives return the recorded result. `closeSource` distinguishes
 `csPeer`, `csEof`, `csLocal`, `csProtocolError`, `csTransportError` and `csTimeout`.
@@ -100,45 +106,42 @@ locally selected close code. A successful closing handshake records the peer's
 code and reason. Abort, EOF, transport failure and timeout use 1006. An idempotent
 abort preserves an already recorded result.
 
-`wmTimeout` is a nonterminal receive result: its payload, code and closeSource
-are not meaningful. Continue sending or receiving on the same connection with
-a new deadline. A single receive deadline covers buffered work, partial frames,
+`None` is a nonterminal receive result. Continue sending or receiving on the
+same connection with a new deadline. A single receive deadline covers buffered work, partial frames,
 fragment assembly and interleaved controls; none restart it. Expiry does not
 discard bytes or retire an application command. The application owns command
 ids, outstanding-command tables, retirement and late-reply handling.
+An already expired deadline returns `None` even when a complete frame is buffered;
+input remains available to a later call. `afterMs(0)` is an expired deadline,
+not a nonblocking polling operation.
 
 `send` and `ping` return true after writing their frame. They return false if the
-connection is closing or closed, or a write fails. Successful writes mean the transport
-accepted the frame, not that the peer acknowledged it.
+connection is closed, or a write fails. A write failure releases the connection;
+the next receive returns its recorded terminal outcome. Successful writes mean
+the transport accepted the frame, not that the peer acknowledged it.
 
-`close` writes one Close frame, enters `wsClosing`, and awaits the peer's Close
-frame. Its whole I/O deadline is the earliest of 250 ms from the call, the
+`close` writes one Close frame and awaits the peer's Close frame. Its whole I/O
+deadline is the earliest of 250 ms from the call, the
 configured operation budget, and `dl`. It discards application messages while
-waiting, answers pings, and releases on every outcome. It returns true after
-the exchange or when already closed; write/read failure, protocol failure,
-expiry or EOF without a Close frame return false. Repeated calls do not send
-another frame. Use `abort` for immediate teardown without a handshake.
+waiting, answers pings, and releases on every outcome. It returns a terminal
+`Message` directly. `csPeer` reports the peer's code and reason;
+`csTimeout`, `csEof`, `csProtocolError` and `csTransportError` identify why the
+exchange ended. Calling close on a closed handle returns the recorded outcome.
+Repeated calls do not send another frame. Use `abort` for immediate teardown.
 
-`wsClosing` is the internal transition after writing Close; it prevents another
-Close frame from being sent. The owning task remains inside `close` until the
-connection is `wsClosed`, so callers do not observe this transition between
-operations. The close operation owns receive processing until termination.
-
-`waitClose` calls `recv` until `wmClose`, discarding application messages. One
-absolute deadline spans the entire wait, including messages and controls: the
-earliest of 250 ms from the call, the configured operation budget, and
-`dl`. It returns the recorded close outcome and releases the transport on
-completion or failure. Repeated calls on a closed connection return that same
-outcome. It does not initiate a closing handshake; on an open connection it
-waits for the peer to close, subject to the same deadline.
+Public state is `wsOpen` or `wsClosed`. One private connection phase records
+whether a Close frame was sent, preventing a second Close reply. The owning task
+remains inside `close` until release, and close owns receive processing until
+termination. To await a peer-initiated close, continue calling `recv`, matching
+`Some(message)` and `None()` under the application's absolute deadline policy.
 
 Teardown requires one close call or one abort call. No application drain loop,
 background task or worker-pool join is needed. The library does not correlate
 requests and replies or introduce locks, threads, queues or callbacks.
 
-Live operations do not raise `ErrorCode`. Read I/O failures return `wmClose`
-with code 1006 and `csTransportError`. Send, close and waitClose expiry record
-code 1006 and `csTimeout`; ordinary receive expiry returns `wmTimeout`.
+Live operations do not raise `ErrorCode`. Read I/O failures return `Some(wmClose)`
+with code 1006 and `csTransportError`. Send and close expiry record
+code 1006 and `csTimeout`; ordinary receive expiry returns `None`.
 Write failures return false. Terminal outcomes release the connection; a receive
 expiry retains its descriptor deliberately. Malformed peer frames
 and close payloads return

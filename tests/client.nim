@@ -1,10 +1,15 @@
 ## Network test driver. The Python runner supplies independent wire fixtures.
-import std/[cmdline, syncio, threadpool, ioring, atomics, strutils, parseutils, dirs, paths]
+import std/[cmdline, syncio, threadpool, ioring, atomics, strutils, parseutils, dirs, paths, opt]
 import tsuru
 import testkit
 
 var done: int
 var failed: int
+
+proc receive(ws: WebSocket; dl = never): Message {.passive.} =
+  case ws.recv(dl)
+  of Some(message): result = message
+  of None(): doAssert false, "expected a message, received deadline expiry"
 
 proc dropConnection(url: string) {.passive, raises.} =
   let ws = connectWebSocket(url)
@@ -25,12 +30,12 @@ proc resourceLoop(url: string) {.passive, raises.} =
         let ws = connectWebSocket(url, dl = afterMs(if mode == "setup-timeout": 25 else: 2000))
         defer: ws.abort()
         if mode == "abort": ws.abort()
-        elif mode == "close-timeout": doAssert not ws.close(1000, "done")
+        elif mode == "close-timeout": doAssert ws.close(1000, "done").closeSource == csTimeout
         elif mode == "reset":
           doAssert ws.send("reset")
-          doAssert ws.recv().closeSource == csTransportError
-        elif mode == "protocol": doAssert ws.recv().closeSource == csProtocolError
-        else: doAssert ws.recv().closeSource == csPeer
+          doAssert ws.receive().closeSource == csTransportError
+        elif mode == "protocol": doAssert ws.receive().closeSource == csProtocolError
+        else: doAssert ws.receive().closeSource == csPeer
         doAssert ws.state == wsClosed
       except ErrorCode as e: caught = e
       doAssert caught == (if mode == "bad-upgrade": ValueError
@@ -65,10 +70,10 @@ proc main(url, mode, caFile: string) {.passive.} =
         for n in [0, 5, 125, 126, 65536, 256000]:
           let data = repeat("x", n)
           doAssert ws.send(data)
-          let text = ws.recv()
+          let text = ws.receive()
           doAssert text.kind == wmText and text.data == data
         doAssert ws.send("\0\xff\x80", binary = true)
-        let binary = ws.recv()
+        let binary = ws.receive()
         doAssert binary.kind == wmBinary and binary.data == "\0\xff\x80"
         for n in [0, 3, 8192, 65536, 256000]:
           var bytes = newSeq[byte](n)
@@ -77,75 +82,75 @@ proc main(url, mode, caFile: string) {.passive.} =
             bytes[i] = byte(i and 255)
             expectedData[i] = char(bytes[i])
           doAssert ws.send(bytes)
-          let reply = ws.recv()
+          let reply = ws.receive()
           doAssert reply.kind == wmBinary and reply.data == expectedData
         doAssert ws.ping("probe")
         doAssert ws.send("after ping")
-        doAssert ws.recv().data == "after ping"
-        doAssert ws.close(1000, "done")
+        doAssert ws.receive().data == "after ping"
+        doAssert ws.close(1000, "done").closeSource == csPeer
         doAssert ws.state == wsClosed
-        doAssert ws.close()
+        doAssert ws.close().closeSource == csPeer
       elif mode == "fragments":
-        let m = ws.recv()
+        let m = ws.receive()
         doAssert m.kind == wmText and m.data == "\xc3\xa9!"
-        let last = ws.recv()
+        let last = ws.receive()
         doAssert last.kind == wmClose and last.code == 1001 and last.data == "bye"
         doAssert last.closeSource == csPeer
         doAssert ws.state == wsClosed
-        doAssert ws.recv().code == 1001
+        doAssert ws.receive().code == 1001
       elif mode == "empty-close":
-        let m = ws.recv()
+        let m = ws.receive()
         doAssert m.kind == wmClose and m.code == 1005 and m.closeSource == csPeer
       elif mode == "eof":
-        let m = ws.recv()
+        let m = ws.receive()
         doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csEof
       elif mode == "protocols":
         doAssert ws.protocol == "chat"
-        doAssert ws.recv().data == "ready"
-        let next = ws.recv()
+        doAssert ws.receive().data == "ready"
+        let next = ws.receive()
         doAssert next.kind == wmBinary and next.data == "\0\xff"
-        doAssert ws.close()
-        doAssert ws.waitClose().closeSource == csPeer
+        doAssert ws.close().closeSource == csPeer
+        doAssert ws.receive().closeSource == csPeer
       elif mode == "write-timeout":
         doAssert not ws.send(repeat("x", 16 * 1024 * 1024))
-        let m = ws.recv()
+        let m = ws.receive()
         doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csTimeout
         doAssert not ws.open
       elif mode == "read-timeout":
-        doAssert ws.recv(dl = afterMs(50)).kind == wmTimeout
+        doAssert ws.recv(dl = afterMs(50)).isNone
         doAssert ws.open
         doAssert ws.send("after timeout")
-        let m = ws.recv(dl = afterMs(2000))
+        let m = ws.receive(dl = afterMs(2000))
         doAssert m.kind == wmText and m.data == "ready"
-        doAssert ws.close()
+        doAssert ws.close().closeSource == csPeer
       elif mode == "buffered-timeout":
-        doAssert ws.recv(dl = afterMs(-1)).kind == wmTimeout
+        doAssert ws.recv(dl = afterMs(-1)).isNone
         doAssert ws.open
-        let m = ws.recv(dl = afterMs(2000))
+        let m = ws.receive(dl = afterMs(2000))
         doAssert m.kind == wmText and m.data == "buffered"
-        doAssert ws.close()
+        doAssert ws.close().closeSource == csPeer
       elif mode == "partial-timeout":
-        doAssert ws.recv(dl = afterMs(50)).kind == wmTimeout
+        doAssert ws.recv(dl = afterMs(50)).isNone
         doAssert ws.open
         doAssert ws.send("after timeout")
-        let m = ws.recv(dl = afterMs(2000))
+        let m = ws.receive(dl = afterMs(2000))
         doAssert m.kind == wmText and m.data == "\xc3\xa9!"
-        let last = ws.recv()
+        let last = ws.receive()
         doAssert last.kind == wmClose and last.code == 1001 and last.data == "bye"
         doAssert last.closeSource == csPeer
       elif mode == "control-timeout":
-        doAssert ws.recv(dl = afterMs(75)).kind == wmTimeout
+        doAssert ws.recv(dl = afterMs(75)).isNone
         doAssert ws.open
-        let m = ws.recv(dl = afterMs(2000))
+        let m = ws.receive(dl = afterMs(2000))
         doAssert m.kind == wmText and m.data == "ready"
-        doAssert ws.close()
+        doAssert ws.close().closeSource == csPeer
       elif mode == "control-backpressure":
-        doAssert ws.recv(dl = afterMs(2500)).kind == wmTimeout, "pong pressure must expire normally"
+        doAssert ws.recv(dl = afterMs(2500)).isNone, "pong pressure must expire normally"
         doAssert ws.open
         doAssert ws.send("after backpressure", dl = afterMs(10_000)), "pending pong must resume before send"
-        let m = ws.recv(dl = afterMs(10_000))
+        let m = ws.receive(dl = afterMs(10_000))
         doAssert m.kind == wmText and m.data == "ready", "pong stream must drain without corruption"
-        doAssert ws.close(), "close after pong pressure must succeed"
+        doAssert ws.close().closeSource == csPeer, "close after pong pressure must succeed"
       elif mode == "commands":
         var pending = default(array[100, bool])
         for id in 0..31:
@@ -154,7 +159,7 @@ proc main(url, mode, caFile: string) {.passive.} =
         pending[99] = true
         doAssert ws.send("{\"id\":99}")
         let commandDeadline = afterMs(50)
-        doAssert ws.recv(dl = commandDeadline).kind == wmTimeout
+        doAssert ws.recv(dl = commandDeadline).isNone
         pending[99] = false
         doAssert ws.open
         pending[32] = true
@@ -163,7 +168,7 @@ proc main(url, mode, caFile: string) {.passive.} =
         var late = 0
         var events = 0
         while remaining > 0:
-          let m = ws.recv(dl = afterMs(2000))
+          let m = ws.receive(dl = afterMs(2000))
           doAssert m.kind == wmText
           if m.data == "{\"event\":\"tick\"}": inc events
           else:
@@ -175,53 +180,52 @@ proc main(url, mode, caFile: string) {.passive.} =
               pending[int(id)] = false
               dec remaining
         doAssert late == 1 and events == 7
-        let last = ws.recv()
+        let last = ws.receive()
         doAssert last.kind == wmClose and last.code == 1001 and last.data == "done"
         doAssert last.closeSource == csPeer
       elif mode == "large":
         let data = repeat("x", 20 * 1024 * 1024)
         doAssert ws.send(data, dl = afterMs(10_000))
-        let m = ws.recv(dl = afterMs(10_000))
+        let m = ws.receive(dl = afterMs(10_000))
         doAssert m.kind == wmText and m.data == data
-        doAssert ws.close()
+        doAssert ws.close().closeSource == csPeer
       elif mode == "reset":
         doAssert ws.send("reset")
-        let m = ws.recv()
+        let m = ws.receive()
         doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csTransportError
         doAssert ws.state == wsClosed
       elif mode == "protocol-error":
-        let m = ws.recv()
+        let m = ws.receive()
         doAssert m.kind == wmClose and m.code in [1002, 1007]
         doAssert m.closeSource == csProtocolError and not ws.open
       elif mode == "too-large":
-        let m = ws.recv()
+        let m = ws.receive()
         doAssert m.kind == wmClose and m.code == 1009
         doAssert m.closeSource == csProtocolError and not ws.open
       elif mode == "close-handshake":
-        doAssert ws.close(1000, "done")
+        let m = ws.close(1000, "done")
+        doAssert m.closeSource == csPeer
         doAssert ws.state == wsClosed and not ws.open
-        doAssert ws.close(1001, "again")
+        doAssert ws.close(1001, "again").closeSource == csPeer
         doAssert not ws.send("closed")
         doAssert not ws.send(newSeq[byte](0))
         doAssert not ws.ping()
-        let m = ws.waitClose()
         doAssert m.kind == wmClose and m.code == 1001 and m.data == "bye"
         doAssert m.closeSource == csPeer
         doAssert ws.state == wsClosed
         ws.abort()
-        doAssert ws.waitClose().code == 1001
+        doAssert ws.receive().code == 1001
       elif mode == "close-abort":
         ws.abort()
-        let m = ws.waitClose()
+        let m = ws.receive()
         doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csLocal
         doAssert ws.state == wsClosed
-        doAssert ws.close()
+        doAssert ws.close().closeSource == csLocal
       elif mode in ["close-timeout", "close-eof", "close-protocol-error"]:
         let started = monoNow()
-        doAssert not ws.close(1000, "done", dl = afterMs(100))
+        let m = ws.close(1000, "done", dl = afterMs(100))
         doAssert int64(monoNow()) - int64(started) < 500_000_000
         doAssert ws.state == wsClosed
-        let m = ws.waitClose()
         doAssert m.kind == wmClose
         if mode == "close-protocol-error":
           doAssert m.code == 1002 and m.closeSource == csProtocolError
@@ -230,8 +234,8 @@ proc main(url, mode, caFile: string) {.passive.} =
           doAssert m.closeSource == (if mode == "close-eof": csEof else: csTimeout)
         doAssert ws.state == wsClosed
         ws.abort()
-        doAssert ws.recv().closeSource == m.closeSource
-      else: discard ws.recv()
+        doAssert ws.receive().closeSource == m.closeSource
+      else: discard ws.receive()
   except ErrorCode as e:
     caught = e
   if caught != expected:

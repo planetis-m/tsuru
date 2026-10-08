@@ -1,9 +1,10 @@
 # Working on Tsuru
 
 This is a Nimony library. Read installed stdlib declarations before using them.
-Connection setup raises `ErrorCode`; live sends and close return bool.
-Receive expiry returns `wmTimeout` without closing or losing partial state;
-receive and waitClose report termination as `wmClose`. Scheduling and I/O use `.passive`.
+Connection setup raises `ErrorCode`; live sends return bool and close returns a
+terminal `Message`. Receive returns `Opt[Message]`: `None` on expiry without
+closing or losing partial state, `Some(wmClose)` on termination.
+Scheduling and I/O use `.passive`.
 
 Build and check with `tests/run --network`. Test TLS changes with
 `tests/run --tls --network` and resource/I/O changes with
@@ -14,7 +15,7 @@ Keep pure framing/handshake decisions independent of socket operations. Check
 peer lengths and indexes before allocating or indexing. Preserve one absolute
 deadline across every operation's fragments, control frames and partial writes.
 Close completes the handshake within 250 ms and releases on every outcome.
-waitClose discards messages under the same short bound. Abort releases immediately.
+Close discards messages under the same short bound. Abort releases immediately.
 Each connection belongs to one task. Do not introduce concurrent access to an
 OpenSSL session or bypass certificate verification.
 
@@ -29,7 +30,9 @@ owns resources and passive I/O. Keep bulk string operations in `internal/buffer`
 Use `openArray` views for byte operations and `beginStore`/`endStore` for writable
 string storage. Keep raw pointers at the FFI and bulk-store boundaries.
 Borrowed parameters may span a normal passive call; scheduler entry points must
-take owned values. Source comments describe current contracts and invariants.
+take owned values. Start parking call chains with `submit(delay(task(...)))`;
+every caller in that chain must be passive. Source comments describe current
+contracts and invariants.
 
 Keep connection state private to the client. Use strings for owned wire buffers
 and message payloads; accept byte sequences when that avoids a caller conversion.

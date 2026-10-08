@@ -16,7 +16,8 @@ custom headers, explicit/empty/abnormal closes, malformed frames and text,
 message limits, handshake/send/receive/close deadlines, closing handshakes
 with interleaved messages and pings, immediate abort, peer close reasons,
 EOF and protocol failure during close, absence of duplicate Close frames,
-boolean write results, recorded receive outcomes, automatic descriptor release,
+boolean write results, optional receive outcomes, direct close outcomes,
+automatic descriptor release,
 localhost DNS, and IPv6 literals. The plain build also checks that
 `wss://` raises `UnimplementedOperation` before attempting TCP.
 
@@ -48,7 +49,9 @@ protocol validation remains enabled.
 
 The repeated-connect fixture covers peer close, rejected upgrade, malformed
 frames, transport reset, close expiry, abort and setup expiry. Ordinary receive
-expiry deliberately retains the descriptor. TLS also exercises receive expiry,
+expiry returns `None` and deliberately retains the descriptor. Closed receives
+return `Some(wmClose)` repeatedly; close returns the terminal message directly.
+TLS also exercises receive expiry,
 fragment resumption, interleaved controls and the 20 MiB text round trip.
 
 The pure codec/handshake tests include the RFC accept-key and masking vectors,

@@ -1,6 +1,6 @@
 ## Receive messages until the peer closes. Configure optional authentication,
 ## subprotocol and CA trust with TSURU_TOKEN, TSURU_PROTOCOL and TSURU_CA_FILE.
-import std/[cmdline, envvars, syncio, threadpool, ioring, atomics]
+import std/[cmdline, envvars, syncio, threadpool, ioring, atomics, opt]
 import tsuru
 
 var done: int
@@ -17,13 +17,14 @@ proc main(url, token, subprotocol, caFile: string) {.passive.} =
     defer: ws.abort()
     echo "Connected; selected protocol: ", ws.protocol
     while ws.open:
-      let message = ws.recv()
-      case message.kind
-      of wmText: echo message.data
-      of wmBinary: echo "Binary message: ", message.data.len, " bytes"
-      of wmTimeout: discard
-      of wmClose:
-        echo "Closed: ", message.closeSource, " ", message.code, " ", message.data
+      case ws.recv()
+      of Some(message):
+        case message.kind
+        of wmText: echo message.data
+        of wmBinary: echo "Binary message: ", message.data.len, " bytes"
+        of wmClose:
+          echo "Closed: ", message.closeSource, " ", message.code, " ", message.data
+      of None(): discard
   except ErrorCode as e:
     echo "Connection failed: ", e
     atomicStore(failed, 1)
