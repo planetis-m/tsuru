@@ -12,7 +12,7 @@ export ioring.Deadline, ioring.never, ioring.afterMs
 
 type
   WebSocketState* = enum
-    wsClosed, wsOpen
+    wsClosed, wsOpen, wsClosing
   MessageKind* = enum
     wmText, wmBinary, wmClose
   CloseSource* = enum
@@ -23,7 +23,7 @@ type
     data*: string
       ## Message payload, or a close reason.
     code*: int
-      ## Peer or locally supplied close status; 1006 means closure without a status.
+      ## Peer or locally generated protocol status; 1006 means abnormal closure or abort.
     closeSource*: CloseSource
   CloseInfo = object
     code: int
@@ -88,7 +88,6 @@ proc fill(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
   result = n > 0
 
 proc emit(ws: WebSocket; op: Opcode; data: string; dl: Deadline): bool {.passive.} =
-  if ws.status == wsClosed: return false
   try:
     checkDeadline(dl)
     var key = default(array[4, uint8])
@@ -102,7 +101,6 @@ proc emit(ws: WebSocket; op: Opcode; data: string; dl: Deadline): bool {.passive
     result = false
 
 proc emit(ws: WebSocket; op: Opcode; data: seq[byte]; dl: Deadline): bool {.passive.} =
-  if ws.status == wsClosed: return false
   try:
     checkDeadline(dl)
     var key = default(array[4, uint8])
@@ -157,22 +155,25 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
 
 proc send*(ws: WebSocket; data: string; binary = false; dl = never): bool {.passive.} =
   ## Send one masked message. The caller supplies valid UTF-8 for text messages.
-  ## Return false on a closed connection or failed write; failures release it.
+  ## Return false unless open, or on a failed write; failures release it.
+  if ws.status != wsOpen: return false
   result = emit(ws, (if binary: opBinary else: opText), data, budget(ws, dl))
 
 proc send*(ws: WebSocket; data: seq[byte]; dl = never): bool {.passive.} =
   ## Send one binary message without converting bytes to a string.
-  ## Return false on a closed connection or failed write; failures release it.
+  ## Return false unless open, or on a failed write; failures release it.
+  if ws.status != wsOpen: return false
   result = emit(ws, opBinary, data, budget(ws, dl))
 
 proc ping*(ws: WebSocket; data = ""; dl = never): bool {.passive.} =
   ## Send a ping of at most 125 bytes. recv consumes pong replies.
-  ## Return false on a closed connection or failed write; failures release it.
+  ## Return false unless open, or on a failed write; failures release it.
+  if ws.status != wsOpen: return false
   result = emit(ws, opPing, data, budget(ws, dl))
 
 proc failProtocol(ws: WebSocket; code: int; dl: Deadline): Message {.passive.} =
   ws.closure = CloseInfo(code: code, source: csProtocolError)
-  if emit(ws, opClose, closeBody(code), dl): release(ws)
+  if ws.status == wsClosing or emit(ws, opClose, closeBody(code), dl): release(ws)
   result = closedMessage(ws)
 
 proc recv*(ws: WebSocket; dl = never): Message {.passive.} =
@@ -201,19 +202,24 @@ proc recv*(ws: WebSocket; dl = never): Message {.passive.} =
         of akPong:
           if not emit(ws, opPong, action.data, deadline): return closedMessage(ws)
         of akMessage:
-          return Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
+          if ws.status == wsOpen:
+            return Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
         of akError: return failProtocol(ws, action.code, deadline)
         of akClose:
           ws.closure = CloseInfo(code: action.code, reason: action.data, source: csPeer)
-          if emit(ws, opClose, frame.payload, deadline): release(ws)
+          if ws.status == wsClosing or emit(ws, opClose, frame.payload, deadline): release(ws)
           return closedMessage(ws)
   except ErrorCode:
     transportFailed(ws)
     result = closedMessage(ws)
 
 proc close*(ws: WebSocket; code = 1000; reason = ""; dl = never): bool {.passive.} =
-  ## Write a close frame and release the connection. Do not await a peer reply.
-  ## Return false on write failure, true on success or when already closed.
+  ## Send close and await the peer's close within five seconds and the operation budget.
+  ## Return true on a peer close or when already closed; false on failure or EOF.
+  ## Always release the connection; abort releases immediately without waiting.
   if ws.status == wsClosed: return true
-  result = emit(ws, opClose, closeBody(code, reason), budget(ws, dl))
-  if result: terminate(ws, csLocal, code, reason)
+  let deadline = earlier(afterMs(min(ws.timeoutMs, 5_000)), dl)
+  if ws.status == wsOpen:
+    if not emit(ws, opClose, closeBody(code, reason), deadline): return false
+    ws.status = wsClosing
+  result = recv(ws, deadline).closeSource == csPeer

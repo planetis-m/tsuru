@@ -68,7 +68,7 @@ Each operation accepts an absolute `Deadline` as `dl`. Its effective deadline
 is the earlier of that instant and `afterMs(options.timeoutMs)`. Deadlines start
 fresh for each call, including preparation and buffered receive processing.
 An expired deadline closes a live connection even when the complete message is
-already buffered.
+already buffered. Close also caps the whole exchange at five seconds.
 
 For a quiet connection, choose a receive budget that fits the application's
 expected idle periods. Incoming pings and pongs do not restart that budget.
@@ -86,15 +86,22 @@ Empty text/binary messages are normal messages, distinct from closure. After a
 close, repeated receives return the recorded result. `closeSource` distinguishes
 `csPeer`, `csEof`, `csLocal`, `csProtocolError` and `csTransportError`. Only `csPeer`
 reports a close received from the peer. A local protocol failure records the
-locally selected close code; a successful local close records its supplied code
-and reason. Abort, EOF and transport failure use 1006. An idempotent abort
+locally selected close code. A successful closing handshake records the peer's
+code and reason. Abort, EOF and transport failure use 1006. An idempotent abort
 preserves an already recorded result.
 
-`send` and `ping` return true after writing their frame, or false when already
-closed or when a write fails. `close` writes its frame and releases the socket
-without waiting for the peer's reply. It returns true on success or when already
-closed, and false on write failure. Successful writes mean the transport accepted
-the frame, not that the peer acknowledged it.
+`send` and `ping` return true after writing their frame. They return false if the
+connection is closing or closed, or a write fails. Successful writes mean the transport
+accepted the frame, not that the peer acknowledged it.
+
+`close` sends a Close frame, enters `wsClosing`, and waits for the peer's Close
+frame under one deadline. The deadline is the earliest of five seconds from
+the call, the configured operation budget, and `dl`. While closing, receive
+processing discards application messages and answers pings; a peer Close frame
+is not echoed again. Close returns true after the exchange or when already
+closed, and false on write/read failure, timeout, protocol failure or EOF
+without a Close frame. It releases the connection in every case. Use `abort`
+to release immediately without a closing handshake.
 
 Live operations do not raise `ErrorCode`. Read failures and timeouts return
 `wmClose` with code 1006 and `csTransportError`; write failures return false.

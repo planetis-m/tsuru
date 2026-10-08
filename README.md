@@ -82,7 +82,7 @@ Custom headers cannot replace handshake fields or add an HTTP request body.
 | `ws.send(bytes: seq[byte], dl)` | Binary message without converting bytes to a string; returns bool |
 | `ws.recv(dl)` | Complete text/binary message or `wmClose`; answers pings automatically |
 | `ws.ping(data = "", dl)` | Send a ping; returns bool; `recv` consumes pongs |
-| `ws.close(code = 1000, reason = "", dl)` | Send close and release immediately; returns bool |
+| `ws.close(code = 1000, reason = "", dl)` | Send close and await the peer's close; returns bool |
 | `ws.abort()` | Release resources immediately; idempotent |
 | `ws.open`, `ws.state`, `ws.protocol` | Connection status and negotiated subprotocol |
 
@@ -127,11 +127,13 @@ All network operations require the C backend.
 
 On peer close, `recv` returns its code and reason and echoes its close payload.
 Code `1005` means the peer omitted a status; `1006` means closure without a
-close status. `message.closeSource` identifies peer closure, EOF, local close,
+close status. `message.closeSource` identifies peer closure, EOF, local abort,
 protocol failure or transport failure. Live operations release the socket on
 failure: send and ping return false, and receive returns `wmClose`. Close
-returns true after writing its frame or if already closed; it returns false
-on a failed write. It does not wait for the peer's reply.
+returns true after exchanging Close frames or if already closed. It returns
+false on failure or EOF without a peer Close frame. The exchange is bounded
+by five seconds, the configured operation budget, and `dl`; resources are
+released in every case. Use `abort` for immediate teardown.
 Callers supply valid outgoing text and control payloads. More detail:
 [API and error contracts](doc/api.md).
 

@@ -23,7 +23,7 @@ proc main(url, mode, caFile: string) {.passive.} =
     else:
       var options = initWebSocketOptions()
       options.caFile = caFile
-      if mode in ["handshake-timeout", "read-timeout", "write-timeout"]:
+      if mode in ["handshake-timeout", "read-timeout", "write-timeout", "close-timeout"]:
         options.timeoutMs = 150
       if mode == "too-large": options.maxMessage = 4
       if mode == "protocols":
@@ -93,7 +93,7 @@ proc main(url, mode, caFile: string) {.passive.} =
         let m = ws.recv()
         doAssert m.kind == wmClose and m.code == 1009
         doAssert m.closeSource == csProtocolError and not ws.open
-      elif mode == "close-without-reply":
+      elif mode == "close-handshake":
         doAssert ws.close(1000, "done")
         doAssert not ws.open
         doAssert ws.close()
@@ -102,8 +102,19 @@ proc main(url, mode, caFile: string) {.passive.} =
         doAssert not ws.ping()
         ws.abort()
         let m = ws.recv()
-        doAssert m.kind == wmClose and m.code == 1000 and m.data == "done"
-        doAssert m.closeSource == csLocal
+        doAssert m.kind == wmClose and m.code == 1001 and m.data == "bye"
+        doAssert m.closeSource == csPeer
+      elif mode in ["close-timeout", "close-eof", "close-protocol-error"]:
+        doAssert not ws.close(1000, "done")
+        doAssert not ws.open
+        ws.abort()
+        let m = ws.recv()
+        doAssert m.kind == wmClose
+        if mode == "close-protocol-error":
+          doAssert m.code == 1002 and m.closeSource == csProtocolError
+        else:
+          doAssert m.code == 1006
+          doAssert m.closeSource == (if mode == "close-eof": csEof else: csTransportError)
       else: discard ws.recv()
   except ErrorCode as e:
     caught = e

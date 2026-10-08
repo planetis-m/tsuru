@@ -12,6 +12,7 @@ the protocol checks active. The small testkit checks remain enabled in danger.
 Keep pure framing/handshake decisions independent of socket operations. Check
 peer lengths and indexes before allocating or indexing. Preserve one absolute
 deadline across every operation's fragments, control frames and partial writes.
+Close waits for the peer under a bounded deadline; abort releases immediately.
 Each connection belongs to one task. Do not introduce concurrent access to an
 OpenSSL session or bypass certificate verification.
 
