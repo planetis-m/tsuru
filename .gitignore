@@ -1,0 +1,4 @@
+nimcache/
+build/
+__pycache__/
+*.exe

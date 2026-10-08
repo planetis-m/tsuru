@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+compiler="${NIMONY:-nimony}"
+flags=()
+network=0
+tls=0
+for arg in "$@"; do
+  case "$arg" in
+    --release) flags+=(-d:release) ;;
+    --danger) flags+=(-d:danger) ;;
+    --tls) flags+=(-d:tsuruTls); tls=1 ;;
+    --asan) flags+=(-d:addressSanitizer) ;;
+    --network) network=1 ;;
+    *) echo "Usage: tests/run [--release|--danger] [--tls] [--asan] [--network]" >&2; exit 2 ;;
+  esac
+done
+for test in tests/t*.nim; do
+  if [[ "$test" != tests/testkit.nim ]]; then
+    "$compiler" c "${flags[@]}" -r "$test"
+  fi
+done
+"$compiler" c "${flags[@]}" -o:build/client tests/client.nim
+"$compiler" c "${flags[@]}" -o:build/echo examples/echo.nim
+if [[ "$network" == 1 ]]; then
+  extra=()
+  if [[ "$tls" == 1 ]]; then extra+=(--tls); fi
+  python3 tests/network.py build/client "${extra[@]}"
+fi
+echo 'All requested checks passed.'
