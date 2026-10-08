@@ -7,12 +7,9 @@ type
   Action* = object
     ## A complete message, control reply or local protocol failure for the I/O loop.
     kind*: ActionKind
-    data*: string
-      ## Message bytes, pong bytes or peer close reason, according to kind.
-    binary*: bool
-      ## Message type for akMessage.
-    code*: int
-      ## Close status for akClose or local failure status for akError.
+    data*: string ## Message bytes, pong bytes or peer close reason, according to kind.
+    binary*: bool ## Message type for akMessage.
+    code*: int ## Close status for akClose or local failure status for akError.
   MessageState* = object
     ## Owns an unfinished fragmented message between handleFrame calls.
     fragmented: bool

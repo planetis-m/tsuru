@@ -4,18 +4,19 @@ Tested on Linux x86-64 with Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 
 | Configuration | Result |
 | --- | --- |
-| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 29 network fixtures passed |
-| Release, plain | Unit/fuzz, 24 network fixtures and unsupported-TLS check passed |
-| Danger, TLS | Unit/fuzz and 29 network fixtures passed |
+| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 31 network fixtures passed |
+| Release, plain | Unit/fuzz, 26 network fixtures and unsupported-TLS check passed |
+| Danger, TLS | Unit/fuzz and 31 network fixtures passed |
 
 The independent Python fixtures exercise actual TCP and TLS connections and
 decode client masking without using this library's codec. Plain tests cover
 empty/short/extended-length text, binary bytes, automatic pongs, fragmented
 UTF-8, bytewise frame delivery, an upgrade and frame in one write, subprotocols,
 custom headers, explicit/empty/abnormal closes, malformed frames and text,
-message limits, handshake/read/write/close deadlines, closing handshakes with
-interleaved messages and pings, peer close reasons, EOF and protocol failure
-during close, absence of duplicate Close frames,
+message limits, handshake/read/write/waitClose deadlines, closing handshakes
+with interleaved messages and pings, in-flight fragmented text and binary
+delivery while closing, explicit abort after close initiation, peer close
+reasons, EOF and protocol failure during close, absence of duplicate Close frames,
 boolean write results, recorded receive outcomes, automatic descriptor release,
 localhost DNS, and IPv6 literals. The plain build also checks that
 `wss://` raises `UnimplementedOperation` before attempting TCP.

@@ -68,13 +68,13 @@ Each operation accepts an absolute `Deadline` as `dl`. Its effective deadline
 is the earlier of that instant and `afterMs(options.timeoutMs)`. Deadlines start
 fresh for each call, including preparation and buffered receive processing.
 An expired deadline closes a live connection even when the complete message is
-already buffered. Close also caps the whole exchange at five seconds.
+already buffered. `waitClose` also caps its whole wait at five seconds.
 
 For a quiet connection, choose a receive budget that fits the application's
 expected idle periods. Incoming pings and pongs do not restart that budget.
 `recv` may suspend while reading fragments or writing a pong or close reply;
-`send`, `ping`, `close` and `connectWebSocket` may also suspend. `abort`, `state`,
-`open` and `protocol` never suspend. Calling `ping` does not start a background
+`send`, `ping`, `close`, `waitClose` and `connectWebSocket` may also suspend.
+`abort`, `state`, `open` and `protocol` never suspend. Calling `ping` does not start a background
 reader; pong replies are consumed during subsequent receives.
 
 The [receive example](../examples/receive.nim) combines authentication,
@@ -84,28 +84,43 @@ budget. Its connection setup has a separate ten-second deadline.
 `recv` returns `Message(kind, data, code)`. `code` is meaningful for `wmClose`.
 Empty text/binary messages are normal messages, distinct from closure. After a
 close, repeated receives return the recorded result. `closeSource` distinguishes
-`csPeer`, `csEof`, `csLocal`, `csProtocolError` and `csTransportError`. Only `csPeer`
-reports a close received from the peer. A local protocol failure records the
+`csPeer`, `csEof`, `csLocal`, `csProtocolError`, `csTransportError` and `csTimeout`.
+Only `csPeer` reports a close received from the peer. A local protocol failure records the
 locally selected close code. A successful closing handshake records the peer's
-code and reason. Abort, EOF and transport failure use 1006. An idempotent abort
-preserves an already recorded result.
+code and reason. Abort, EOF, transport failure and timeout use 1006. An idempotent
+abort preserves an already recorded result.
 
 `send` and `ping` return true after writing their frame. They return false if the
 connection is closing or closed, or a write fails. Successful writes mean the transport
 accepted the frame, not that the peer acknowledged it.
 
-`close` sends a Close frame, enters `wsClosing`, and waits for the peer's Close
-frame under one deadline. The deadline is the earliest of five seconds from
-the call, the configured operation budget, and `dl`. While closing, receive
-processing discards application messages and answers pings; a peer Close frame
-is not echoed again. Close returns true after the exchange or when already
-closed, and false on write/read failure, timeout, protocol failure or EOF
-without a Close frame. It releases the connection in every case. Use `abort`
-to release immediately without a closing handshake.
+`close` writes one Close frame under its operation budget, enters `wsClosing`,
+and returns without awaiting the peer. It returns true after writing or when
+already closing/closed, and false on write failure. Repeated calls do not send
+another frame. The write can suspend on socket backpressure. Successful
+initiation leaves the transport owned by the connection.
 
-Live operations do not raise `ErrorCode`. Read failures and timeouts return
-`wmClose` with code 1006 and `csTransportError`; write failures return false.
-Both release the connection. Malformed peer frames and close payloads return
+While closing, `send` and `ping` return false, but `recv` continues delivering
+complete text/binary messages and answering pings until the peer's Close frame.
+`open` reports whether application writes are allowed, so it is false in
+`wsClosing` even though receiving remains possible. A peer Close frame is not
+echoed again if a Close frame was already sent.
+
+`waitClose` calls `recv` until `wmClose`, discarding application messages. One
+absolute deadline spans the entire wait, including messages and controls: the
+earliest of five seconds from the call, the configured operation budget, and
+`dl`. It returns the recorded close outcome and releases the transport on
+completion or failure. Repeated calls on a closed connection return that same
+outcome. It does not initiate a closing handshake; on an open connection it
+waits for the peer to close, subject to the same deadline.
+
+After initiating close, drive completion with `recv` or `waitClose`, or use
+`abort` to release immediately. No background task completes the handshake.
+
+Live operations do not raise `ErrorCode`. Read I/O failures return `wmClose`
+with code 1006 and `csTransportError`. Timeouts record code 1006 and `csTimeout`;
+write failures return false. All release the connection. Malformed peer frames
+and close payloads return
 `wmClose` with code 1002, malformed UTF-8 with 1007, and exceeded receive limits
 with 1009. These use `csProtocolError` and attempt a close frame before release.
 If a peer close or protocol failure was already recorded, a failed close reply

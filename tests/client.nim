@@ -54,6 +54,8 @@ proc main(url, mode, caFile: string) {.passive.} =
         doAssert ws.send("after ping")
         doAssert ws.recv().data == "after ping"
         doAssert ws.close(1000, "done")
+        doAssert ws.state == wsClosing
+        doAssert ws.waitClose().closeSource == csPeer
         doAssert ws.state == wsClosed
         doAssert ws.close()
       elif mode == "fragments":
@@ -76,14 +78,15 @@ proc main(url, mode, caFile: string) {.passive.} =
         let next = ws.recv()
         doAssert next.kind == wmBinary and next.data == "\0\xff"
         doAssert ws.close()
+        doAssert ws.waitClose().closeSource == csPeer
       elif mode == "write-timeout":
         doAssert not ws.send(repeat("x", 16 * 1024 * 1024))
         let m = ws.recv()
-        doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csTransportError
+        doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csTimeout
         doAssert not ws.open
       elif mode == "read-timeout":
         let m = ws.recv()
-        doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csTransportError
+        doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csTimeout
         doAssert not ws.open
       elif mode == "protocol-error":
         let m = ws.recv()
@@ -95,26 +98,48 @@ proc main(url, mode, caFile: string) {.passive.} =
         doAssert m.closeSource == csProtocolError and not ws.open
       elif mode == "close-handshake":
         doAssert ws.close(1000, "done")
-        doAssert not ws.open
-        doAssert ws.close()
+        doAssert ws.state == wsClosing and not ws.open
+        doAssert ws.close(1001, "again")
         doAssert not ws.send("closed")
         doAssert not ws.send(newSeq[byte](0))
         doAssert not ws.ping()
-        ws.abort()
-        let m = ws.recv()
+        let m = ws.waitClose()
         doAssert m.kind == wmClose and m.code == 1001 and m.data == "bye"
         doAssert m.closeSource == csPeer
-      elif mode in ["close-timeout", "close-eof", "close-protocol-error"]:
-        doAssert not ws.close(1000, "done")
-        doAssert not ws.open
+        doAssert ws.state == wsClosed
         ws.abort()
+        doAssert ws.waitClose().code == 1001
+      elif mode == "close-inflight":
+        doAssert ws.close(1000, "done")
+        let text = ws.recv()
+        doAssert text.kind == wmText and text.data == "\xc3\xa9!"
+        doAssert ws.state == wsClosing
+        let binary = ws.recv()
+        doAssert binary.kind == wmBinary and binary.data == "\0\xff"
         let m = ws.recv()
+        doAssert m.kind == wmClose and m.code == 1001 and m.data == "bye"
+        doAssert m.closeSource == csPeer and ws.state == wsClosed
+      elif mode == "close-abort":
+        doAssert ws.close(1000, "done")
+        doAssert ws.state == wsClosing
+        ws.abort()
+        let m = ws.waitClose()
+        doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csLocal
+        doAssert ws.state == wsClosed
+        doAssert ws.close()
+      elif mode in ["close-timeout", "close-eof", "close-protocol-error"]:
+        doAssert ws.close(1000, "done")
+        doAssert ws.state == wsClosing
+        let m = ws.waitClose()
         doAssert m.kind == wmClose
         if mode == "close-protocol-error":
           doAssert m.code == 1002 and m.closeSource == csProtocolError
         else:
           doAssert m.code == 1006
-          doAssert m.closeSource == (if mode == "close-eof": csEof else: csTransportError)
+          doAssert m.closeSource == (if mode == "close-eof": csEof else: csTimeout)
+        doAssert ws.state == wsClosed
+        ws.abort()
+        doAssert ws.recv().closeSource == m.closeSource
       else: discard ws.recv()
   except ErrorCode as e:
     caught = e

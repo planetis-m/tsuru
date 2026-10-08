@@ -15,7 +15,7 @@ proc chat() {.passive.} =
     if not ws.send("Hello from Nimony"): return
     let message = ws.recv()
     # message.kind is wmText, wmBinary, or wmClose; message.data holds its payload.
-    discard ws.close()
+    if ws.close(): discard ws.waitClose()
   except ErrorCode as e:
     discard e # Handle connection setup errors here.
 ```
@@ -82,7 +82,8 @@ Custom headers cannot replace handshake fields or add an HTTP request body.
 | `ws.send(bytes: seq[byte], dl)` | Binary message without converting bytes to a string; returns bool |
 | `ws.recv(dl)` | Complete text/binary message or `wmClose`; answers pings automatically |
 | `ws.ping(data = "", dl)` | Send a ping; returns bool; `recv` consumes pongs |
-| `ws.close(code = 1000, reason = "", dl)` | Send close and await the peer's close; returns bool |
+| `ws.close(code = 1000, reason = "", dl)` | Write a Close frame and enter `wsClosing`; returns bool |
+| `ws.waitClose(dl)` | Discard messages until `wmClose`; wait is capped at five seconds |
 | `ws.abort()` | Release resources immediately; idempotent |
 | `ws.open`, `ws.state`, `ws.protocol` | Connection status and negotiated subprotocol |
 
@@ -128,12 +129,25 @@ All network operations require the C backend.
 On peer close, `recv` returns its code and reason and echoes its close payload.
 Code `1005` means the peer omitted a status; `1006` means closure without a
 close status. `message.closeSource` identifies peer closure, EOF, local abort,
-protocol failure or transport failure. Live operations release the socket on
-failure: send and ping return false, and receive returns `wmClose`. Close
-returns true after exchanging Close frames or if already closed. It returns
-false on failure or EOF without a peer Close frame. The exchange is bounded
-by five seconds, the configured operation budget, and `dl`; resources are
-released in every case. Use `abort` for immediate teardown.
+protocol failure, transport failure or timeout. Live operations release the
+socket on failure: send and ping return false, and receive returns `wmClose`.
+
+`close` returns true after writing its frame or if already closing/closed,
+and false on write failure. It can suspend while writing, within its operation
+budget. After initiating close, call `recv` to process remaining messages or
+`waitClose` to discard them and finish shutdown:
+
+```nim
+discard ws.close(1000, "done")
+let outcome = ws.waitClose()
+# outcome.closeSource == csPeer means a peer Close frame was received.
+```
+
+`waitClose` returns the recorded `wmClose` outcome. The wait is bounded by five
+seconds, the configured operation budget, and `dl`; resources are released on
+completion or failure. Timeouts use code 1006 and `csTimeout`. Calling `close`
+alone leaves the connection awaiting its peer; use `recv`, `waitClose`, or
+`abort` to finish. `abort` releases immediately without waiting.
 Callers supply valid outgoing text and control payloads. More detail:
 [API and error contracts](doc/api.md).
 

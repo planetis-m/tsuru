@@ -124,13 +124,22 @@ def fixture(sock, mode, wire=None, code=1002):
         sock.sendall(frame(8, data))
         assert sock.recv(1) == b""
         return
-    if mode in ("close-handshake", "close-timeout", "close-eof", "close-protocol-error"):
+    if mode in ("close-handshake", "close-inflight", "close-abort",
+                "close-timeout", "close-eof", "close-protocol-error"):
         handshake(sock)
         assert read_frame(sock) == (8, struct.pack("!H", 1000) + b"done")
         if mode == "close-handshake":
             sock.sendall(frame(1, b"ignored") + frame(9, b"probe"))
             assert read_frame(sock) == (10, b"probe")
             sock.sendall(frame(8, struct.pack("!H", 1001) + b"bye"))
+        elif mode == "close-inflight":
+            sock.sendall(frame(1, b"\xc3", False) + frame(9, b"probe"))
+            assert read_frame(sock) == (10, b"probe")
+            sock.sendall(frame(0, b"\xa9!") + frame(2, b"\0\xff")
+                         + frame(8, struct.pack("!H", 1001) + b"bye"))
+        elif mode == "close-abort":
+            assert sock.recv(1) == b""
+            return
         elif mode == "close-protocol-error":
             sock.sendall(b"\x81\x80")
         elif mode == "close-eof":
@@ -195,7 +204,8 @@ def main():
     binary = args.binary.resolve()
     for mode in ("echo", "drop", "fragments", "empty-close", "eof", "protocols",
                  "bad-upgrade", "handshake-timeout", "read-timeout", "write-timeout",
-                 "close-handshake", "close-timeout", "close-eof", "close-protocol-error"):
+                 "close-handshake", "close-inflight", "close-abort",
+                 "close-timeout", "close-eof", "close-protocol-error"):
         run_case(binary, mode)
     for wire, code in [(b"\x81\x80", 1002), (frame(1, b"\xff"), 1007),
                        (frame(0, b"orphan"), 1002), (frame(8, b"x"), 1002),
