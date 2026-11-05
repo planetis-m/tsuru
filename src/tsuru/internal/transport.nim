@@ -55,7 +55,7 @@ proc closeNotify*(t: var Transport) =
       clearErrors()
 
 proc checkDeadline*(dl: Deadline) {.raises.} =
-  if dl <= monoNow(): raise TimeoutError
+  if dl.expired: raise TimeoutError
 
 proc waitReady(fd: cint; events: IoEvents; dl: Deadline) {.passive, raises.} =
   checkDeadline(dl)

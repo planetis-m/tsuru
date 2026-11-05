@@ -44,7 +44,8 @@ proc pump(ws: WebSocket; pending: Receiver[string]; expected: int): bool {.passi
         if replies == expected: return ws.close().closeSource == csPeer
       of None: discard
   except ErrorCode:
-    result = false # tryRecv raises only on a default-constructed Receiver
+    result = false # tryRecv raises only on a default-constructed Receiver,
+                   # close only on invalid arguments
 
 proc main(url: string) {.passive.} =
   try:

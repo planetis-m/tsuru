@@ -9,7 +9,7 @@ See [runtime](runtime.md) for scheduling, TLS and connection ownership.
 
 | Operation | Result |
 | --- | --- |
-| `connectWebSocket(url, dl = never, options = initWebSocketOptions())` | Connected `WebSocket`; raises on setup failure |
+| `connectWebSocket(url, dl = afterMs(DefaultConnectMs), options = initWebSocketOptions())` | Connected `WebSocket`; raises on setup failure |
 | `ws.send(data: string, binary = false, dl = never)` | Write success as `bool`; text by default |
 | `ws.send(data: seq[byte], dl = never)` | Binary write success as `bool` |
 | `ws.recv(dl = never)` | `Opt[Message]`: complete message, terminal close, or expiry |
@@ -21,7 +21,7 @@ See [runtime](runtime.md) for scheduling, TLS and connection ownership.
 
 Connect, send, receive, ping and close may suspend. Abort and the status
 accessors never suspend. Live operations return outcomes without raising
-`ErrorCode`.
+`ErrorCode`, except `BadOperation` for invalid ping or close arguments.
 
 ## Options
 
@@ -64,8 +64,8 @@ Callers supply valid UTF-8 for text messages and close reasons; it is not
 revalidated, and outgoing payloads are not restricted by the receive limit.
 Control frame limits are checked before any I/O: a ping payload over 125 bytes,
 a close code outside 1000–1003, 1007–1014 and 3000–4999, or a close reason over
-123 bytes sends nothing and releases the connection like `abort` (1006,
-`csLocal`). `ping` then returns false, like any failed send.
+123 bytes is a programming error. The call raises `BadOperation`, sends nothing
+and leaves the connection open and usable.
 
 Sends copy and mask into a reusable wire buffer. Sending a byte sequence avoids
 a sequence-to-string conversion. The client retains its largest send and
@@ -105,6 +105,8 @@ deadlines and late-reply handling belong to the application.
 ## Deadlines
 
 An operation uses the earlier of `dl` and `afterMs(options.timeoutMs)`.
+Connect's `dl` defaults to `afterMs(DefaultConnectMs)`, ten seconds from the
+call; pass `never` to leave only the operation budget.
 One deadline covers preparation, buffered processing, partial I/O, fragments
 and interleaved controls. Control traffic does not restart it.
 
@@ -136,7 +138,7 @@ if outcome.closeSource != csPeer:
 | --- | --- |
 | `csPeer` | Peer Close; preserves its code and reason |
 | `csEof` | Transport EOF without a Close frame |
-| `csLocal` | Local abort, rejected ping or close arguments, or a default closed handle |
+| `csLocal` | Local abort, or a default closed handle |
 | `csProtocolError` | Malformed peer frame, text or close payload, or exceeded receive limit |
 | `csTransportError` | Socket, TLS or output failure |
 | `csTimeout` | Send, ping or close deadline expired |

@@ -19,6 +19,8 @@ export http.Header, http.HttpResponse, http.header
 export ioring.Deadline, ioring.never, ioring.afterMs
 
 const
+  DefaultConnectMs* = 10_000
+    ## How long connectWebSocket waits for TCP, TLS and the upgrade by default.
   DefaultMaxMessage = 16 * 1024 * 1024
   AbnormalClosure = 1006
   MaxControlPayload = 125
@@ -128,11 +130,11 @@ proc emit[T: char | byte](ws: WebSocket; op: Opcode; data: openArray[T]; dl: Dea
     transportFailed(ws, e)
     result = false
 
-proc connectWebSocket*(url: string; dl = never; options = initWebSocketOptions()): WebSocket
-    {.passive, raises.} =
+proc connectWebSocket*(url: string; dl = afterMs(DefaultConnectMs);
+                       options = initWebSocketOptions()): WebSocket {.passive, raises.} =
   ## Complete TCP, optional TLS and HTTP upgrade within the options' operation
-  ## budget, tightened by dl. TLS requires -d:tsuruTls; unsupported wss raises
-  ## UnimplementedOperation.
+  ## budget, tightened by dl (ten seconds from the call by default).
+  ## TLS requires -d:tsuruTls; unsupported wss raises UnimplementedOperation.
   if options.maxMessage <= 0 or options.timeoutMs <= 0 or '\0' in options.caFile:
     raise ValueError
   let deadline = earlier(afterMs(options.timeoutMs), dl)
@@ -173,14 +175,12 @@ proc send*(ws: WebSocket; data: seq[byte]; dl = never): bool {.passive.} =
   if not ws.live: return false
   result = emit(ws, opBinary, toOpenArray(data, 0, data.len - 1), budget(ws, dl))
 
-proc ping*(ws: WebSocket; data = ""; dl = never): bool {.passive.} =
+proc ping*(ws: WebSocket; data = ""; dl = never): bool {.passive, raises.} =
   ## Send a ping of at most 125 bytes. recv consumes pong replies.
   ## Return false unless open, or on a failed write; failures release it.
-  ## A longer payload sends nothing and releases the connection like abort.
+  ## A longer payload raises BadOperation before any I/O and keeps the connection.
+  if data.len > MaxControlPayload: raise BadOperation
   if not ws.live: return false
-  if data.len > MaxControlPayload:
-    terminate(ws, csLocal)
-    return false
   result = emit(ws, opPing, toOpenArray(data, 0, data.len - 1), budget(ws, dl))
 
 proc closeWith(ws: WebSocket; code: int; reason: string; source: CloseSource;
@@ -255,16 +255,14 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
   result = receive(ws, budget(ws, dl), false)
 
 proc close*(ws: WebSocket; code = 1000; reason = ""; dl = afterMs(1000)): Message
-    {.passive, discardable.} =
+    {.passive, raises, discardable.} =
   ## Send Close and await the peer's Close within dl and the operation budget.
   ## Always release and return the terminal outcome; csPeer means a peer Close arrived.
   ## Return the recorded outcome if already closed.
-  ## An invalid code or a reason over 123 bytes sends nothing and releases
-  ## like abort. abort releases immediately without a handshake.
+  ## An invalid code or a reason over 123 bytes raises BadOperation before any
+  ## I/O and keeps the connection. abort releases immediately without a handshake.
+  if not validCloseCode(code) or reason.len > MaxCloseReason: raise BadOperation
   if not ws.live: return closedMessage(ws)
-  if not validCloseCode(code) or reason.len > MaxCloseReason:
-    terminate(ws, csLocal)
-    return closedMessage(ws)
   let deadline = budget(ws, dl)
   let body = closeBody(code, reason)
   if not emit(ws, opClose, toOpenArray(body, 0, body.len - 1), deadline):

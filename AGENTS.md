@@ -6,8 +6,10 @@ This is a Nimony library. Read installed stdlib declarations before using them.
 Read [runtime](doc/runtime.md), [WebSocket](doc/api.md) and [HTTP](doc/http.md)
 for public contracts.
 
-WebSocket setup raises ErrorCode. Live sends return bool, receive returns
-Opt[Message], and close returns a terminal Message. Receive expiry preserves
+WebSocket setup raises ErrorCode, by default within DefaultConnectMs. Live
+sends return bool, receive returns Opt[Message], and close returns a terminal
+Message; invalid ping or close arguments raise BadOperation and keep the
+connection. Receive expiry preserves
 the connection and partial state.
 
 HTTP operations raise ErrorCode; failures during an exchange release the

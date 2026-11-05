@@ -43,7 +43,7 @@ proc resourceLoop(url: string) {.passive, raises.} =
 proc main(url, mode, caFile: string) {.passive.} =
   var expected = Success
   if mode == "bad-upgrade": expected = ValueError
-  elif mode == "handshake-timeout": expected = TimeoutError
+  elif mode in ["handshake-timeout", "connect-default"]: expected = TimeoutError
   elif mode == "tls-reject": expected = PermissionDenied
   elif mode == "no-tls": expected = UnimplementedOperation
   var caught = Success
@@ -51,6 +51,16 @@ proc main(url, mode, caFile: string) {.passive.} =
     if mode == "resources": resourceLoop(url)
     elif mode == "drop":
       dropConnection(url)
+    elif mode == "connect-default":
+      # A server that never answers the upgrade fails setup after the default
+      # connect deadline, well inside the 30 second operation budget.
+      let started = monoNow()
+      try:
+        connectWebSocket(url).abort()
+      except ErrorCode as e:
+        let ms = (int64(monoNow()) - int64(started)) div 1_000_000
+        doAssert ms >= DefaultConnectMs - 50 and ms < DefaultConnectMs + 2000
+        caught = e
     else:
       var options = initWebSocketOptions()
       options.caFile = caFile
@@ -232,16 +242,23 @@ proc main(url, mode, caFile: string) {.passive.} =
         let m = ws.close(1000, repeat("r", 123))
         doAssert m.closeSource == csPeer and m.code == 1000
         doAssert int64(monoNow()) - int64(started) >= 300_000_000
-      elif mode == "ping-guard":
-        doAssert ws.ping(repeat("p", 125))
-        doAssert not ws.ping(repeat("p", 126))
-        doAssert not ws.open
-        let m = ws.receive()
-        doAssert m.code == 1006 and m.closeSource == csLocal
-      elif mode in ["close-guard", "close-reason-guard"]:
-        let m = if mode == "close-guard": ws.close(1005) else: ws.close(1000, repeat("r", 124))
-        doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csLocal
-        doAssert not ws.open and ws.receive().closeSource == csLocal
+      elif mode in ["ping-guard", "close-guard", "close-reason-guard"]:
+        # Invalid control arguments are programming errors: nothing is sent
+        # and the connection stays open and usable.
+        if mode == "ping-guard": doAssert ws.ping(repeat("p", 125))
+        var rejected = Success
+        try:
+          if mode == "ping-guard": discard ws.ping(repeat("p", 126))
+          elif mode == "close-guard": discard ws.close(1005)
+          else: discard ws.close(1000, repeat("r", 124))
+        except ErrorCode as e: rejected = e
+        doAssert rejected == BadOperation and ws.open
+        doAssert ws.send("still open")
+        doAssert ws.close().closeSource == csPeer
+        rejected = Success
+        try: discard ws.close(1005)
+        except ErrorCode as e: rejected = e
+        doAssert rejected == BadOperation and ws.close().closeSource == csPeer
       elif mode == "close-abort":
         ws.abort()
         let m = ws.receive()

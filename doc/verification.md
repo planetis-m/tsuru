@@ -23,9 +23,9 @@ Linux x86-64, Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 
 | Configuration | Result |
 | --- | --- |
-| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 88 network fixtures passed |
-| Release, plain | Unit/fuzz, 65 network fixtures and setup-expiry/unsupported-TLS checks passed |
-| Danger, TLS | Unit/fuzz and 88 network fixtures passed |
+| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 89 network fixtures passed |
+| Release, plain | Unit/fuzz, 66 network fixtures and setup-expiry/unsupported-TLS checks passed |
+| Danger, TLS | Unit/fuzz and 89 network fixtures passed |
 
 The wire fixtures use independent Python encoders and decoders. Unit tests
 cover pure codecs and HTTP heads. A shared-type test imports both clients together
@@ -41,7 +41,7 @@ Test assertions and peer-protocol checks remain active in danger builds.
 
 ## WebSocket coverage
 
-The WebSocket runner has 39 TCP fixtures (including the pump example) and 12 additional TLS fixtures.
+The WebSocket runner has 40 TCP fixtures (including the pump example) and 12 additional TLS fixtures.
 The runners and examples import `tsuru/websocket` and `tsuru/httpclient`;
 unit tests import the internal codecs directly. The WebSocket runner also runs
 `examples/pump` against the echo fixture: four tasks queue 100 messages that
@@ -62,7 +62,8 @@ frames/text, message limits, close outcomes, DNS and IPv6 literals.
 | Large payloads work in both directions | `large`: 20 MiB text round trip |
 | Teardown is bounded | `close-timeout`: 100 ms deadline, measured under 500 ms |
 | Close waits up to its deadline (one second by default) | `close-slow`: peer replies after 400 ms, after a second idle |
-| Invalid ping and close arguments send nothing and release | `ping-guard`, `close-guard`, `close-reason-guard` |
+| Invalid ping and close arguments raise BadOperation, send nothing and keep the connection usable | `ping-guard`, `close-guard`, `close-reason-guard` |
+| Connect is bounded by default | `connect-default`: a silent server fails setup after `DefaultConnectMs` |
 | Terminal paths release descriptors | `resources`: 15 connections with stable descriptor counts |
 
 Other closing fixtures check interleaved messages and pings, peer code/reason,

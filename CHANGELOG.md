@@ -29,14 +29,21 @@ shared `Header`, `HttpResponse`, `header`, `Deadline`, `afterMs` and `never`.
   longer `dl` waits longer. The result is `{.discardable.}`.
 - WebSocket `ping` with a payload over 125 bytes, and `close` with a code that
   may not go on the wire (outside 1000–1003, 1007–1014, 3000–4999) or a reason
-  over 123 bytes, send nothing and release the connection like `abort`
-  (1006, `csLocal`); `ping` returns false. They used to send invalid frames.
+  over 123 bytes, raise `BadOperation`, send nothing and leave the connection
+  open and usable, like HTTP's invalid-input errors. They used to send invalid
+  frames. `ping` and `close` are now `{.raises.}`.
+- `connectWebSocket` defaults `dl` to `afterMs(DefaultConnectMs)` (new
+  exported constant, 10,000 ms) instead of `never`, so a server that never
+  answers the upgrade fails setup after ten seconds rather than the 30 second
+  operation budget. Pass `never` for the old behaviour. `connectHttp` keeps its
+  required deadline, like `request`.
 - HTTP `request` while a body is unread raises `BadOperation` instead of
   `ValueError`.
 - HTTP `request` with an already expired deadline raises `TimeoutError` before
   any I/O and keeps an idle keep-alive connection, as documented. It used to
   close it.
 - Internal: the unobservable `connClosing` state is gone.
+- Internal: `checkDeadline` uses the stdlib's `expired` (same behaviour).
 
 ### Documentation
 

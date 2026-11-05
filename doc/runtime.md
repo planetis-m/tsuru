@@ -44,7 +44,8 @@ reads inherit the request deadline and may tighten it. See the
 [WebSocket](api.md#deadlines) and [HTTP](http.md#deadlines) guides for expiry behavior.
 
 Pass `never` explicitly to allow an unbounded HTTP operation. On WebSockets,
-`dl = never` leaves the configured operation budget in effect.
+`dl = never` leaves the configured operation budget in effect; connect
+defaults to `afterMs(DefaultConnectMs)` (ten seconds) instead.
 
 ## TLS
 

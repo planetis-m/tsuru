@@ -132,14 +132,19 @@ def fixture(sock, mode, wire=None, code=1002, client_done=None):
         sock.sendall(frame(8, struct.pack("!H", 1000)))
         assert sock.recv(1) == b""
         return
-    if mode == "ping-guard":
+    if mode in ("ping-guard", "close-guard", "close-reason-guard"):
         handshake(sock)
-        assert read_frame(sock) == (9, b"p" * 125)
-        assert sock.recv(1) == b"", "an oversized ping must send nothing and release"
+        if mode == "ping-guard":
+            assert read_frame(sock) == (9, b"p" * 125)
+        assert read_frame(sock) == (1, b"still open"), "a rejected control must send nothing"
+        assert read_frame(sock) == (8, struct.pack("!H", 1000))
+        sock.sendall(frame(8, struct.pack("!H", 1000)))
+        assert sock.recv(1) == b""
         return
-    if mode in ("close-guard", "close-reason-guard"):
-        handshake(sock)
-        assert sock.recv(1) == b"", "an invalid close must send nothing and release"
+    if mode == "connect-default":
+        sock.settimeout(20)
+        while sock.recv(4096):
+            pass
         return
     if mode == "close-abort":
         handshake(sock)
@@ -364,7 +369,7 @@ def main():
     if args.pump:
         run_case(args.pump.resolve(), "echo")
     for mode in ("echo", "drop", "fragments", "empty-close", "eof", "protocols",
-                 "bad-upgrade", "handshake-timeout", "read-timeout", "write-timeout",
+                 "bad-upgrade", "handshake-timeout", "connect-default", "read-timeout", "write-timeout",
                  "buffered-timeout", "partial-timeout", "large-partial-timeout", "control-timeout",
                  "control-backpressure",
                  "commands", "large", "reset",
