@@ -170,12 +170,27 @@ proc ping*(ws: WebSocket; data = ""; dl = never): bool {.passive.} =
   if ws.status != connOpen: return false
   result = emit(ws, opPing, toOpenArray(data, 0, data.len - 1), budget(ws, dl))
 
-proc failProtocol(ws: WebSocket; code: int; dl: Deadline): Message {.passive.} =
-  ws.closure = CloseInfo(code: code, source: csProtocolError)
-  let body = closeBody(code)
-  if ws.status == connClosing or emit(ws, opClose, toOpenArray(body, 0, body.len - 1), dl):
+proc closeWith(ws: WebSocket; code: int; reason: string; source: CloseSource;
+               payload: string; dl: Deadline): Message {.passive.} =
+  ## Record the outcome, answer with a Close frame unless one was already sent,
+  ## then release.
+  ws.closure = CloseInfo(code: code, reason: reason, source: source)
+  if ws.status == connClosing or emit(ws, opClose, toOpenArray(payload, 0, payload.len - 1), dl):
     release(ws)
   result = closedMessage(ws)
+
+proc failProtocol(ws: WebSocket; code: int; dl: Deadline): Message {.passive.} =
+  closeWith(ws, code, "", csProtocolError, closeBody(code), dl)
+
+proc eof(ws: WebSocket): Message =
+  terminate(ws, csEof)
+  closedMessage(ws)
+
+proc deliver(ws: WebSocket; dl: Deadline): Message {.passive.} =
+  ## Finish the message after its final frame.
+  let action = finishMessage(ws.fragments)
+  if action.kind == akError: return failProtocol(ws, action.code, dl)
+  result = Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
 
 proc assembleBuffered(ws: WebSocket) =
   ## Append the buffered part of the current data frame to the message.
@@ -195,13 +210,6 @@ proc readPayload(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
   else:
     result = fill(ws, dl)
 
-proc peerClosed(ws: WebSocket; action: Action; payload: string; dl: Deadline): Message
-    {.passive.} =
-  ws.closure = CloseInfo(code: action.code, reason: action.data, source: csPeer)
-  if ws.status == connClosing or emit(ws, opClose, toOpenArray(payload, 0, payload.len - 1), dl):
-    release(ws)
-  result = closedMessage(ws)
-
 proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
   ## Receive Some(complete message or terminal wmClose), or None on deadline expiry.
   ## One deadline spans fragments and pings. Expiry preserves the live connection,
@@ -217,13 +225,8 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
         if buffered(ws.input) > 0:
           assembleBuffered(ws)
         elif not readPayload(ws, deadline):
-          terminate(ws, csEof)
-          return some(closedMessage(ws))
-        if ws.frameLeft == 0 and ws.frameFin:
-          let action = finishMessage(ws.fragments)
-          if action.kind == akError: return some(failProtocol(ws, action.code, deadline))
-          return some(Message(kind: (if action.binary: wmBinary else: wmText),
-                              data: action.data))
+          return some(eof(ws))
+        if ws.frameLeft == 0 and ws.frameFin: return some(deliver(ws, deadline))
         continue
       var h = FrameHeader()
       let parsed = parseFrameHeader(unread(ws.input), h,
@@ -231,8 +234,7 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
       case parsed.status
       of psIncomplete:
         if not fill(ws, deadline):
-          terminate(ws, csEof)
-          return some(closedMessage(ws))
+          return some(eof(ws))
       of psError: return some(failProtocol(ws, 1002, deadline))
       of psTooLarge: return some(failProtocol(ws, 1009, deadline))
       of psOk:
@@ -240,8 +242,7 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
           let first = ws.input.pos + parsed.consumed
           if h.length > ws.input.data.len - first:
             if not fill(ws, deadline):
-              terminate(ws, csEof)
-              return some(closedMessage(ws))
+              return some(eof(ws))
             continue
           ws.input.pos = first + h.length
           let action = handleControl(h.opcode,
@@ -252,7 +253,7 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
             flush(ws, deadline)
           of akClose:
             let payload = ws.input.data.substr(first, first + h.length - 1)
-            return some(peerClosed(ws, action, payload, deadline))
+            return some(closeWith(ws, action.code, action.data, csPeer, payload, deadline))
           of akError: return some(failProtocol(ws, action.code, deadline))
           of akNone, akMessage: discard
         else:
@@ -261,11 +262,7 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
           ws.input.pos += parsed.consumed
           ws.frameLeft = h.length
           ws.frameFin = h.fin
-          if h.length == 0 and h.fin:
-            let action = finishMessage(ws.fragments)
-            if action.kind == akError: return some(failProtocol(ws, action.code, deadline))
-            return some(Message(kind: (if action.binary: wmBinary else: wmText),
-                                data: action.data))
+          if h.length == 0 and h.fin: return some(deliver(ws, deadline))
   except ErrorCode as e:
     if e == TimeoutError:
       result = none[Message]()
