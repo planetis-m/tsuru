@@ -87,12 +87,18 @@ proc consumeBody(c: HttpClient) {.passive, raises.} =
 
 Use `readAll` for a collected string and `readBody` for bounded-memory
 streaming. Both enforce `maxBody`, which defaults to 64 MiB.
-Response heads are limited to 16 KiB.
+A `readAll` of a Content-Length body allocates the result once. With no
+buffered input, a `readBody` of at least 16 KiB reads from the socket straight
+into the caller's storage. Response heads are limited to 16 KiB and 100 fields;
+request heads are not limited by the client.
 
 HEAD, informational, 204 and 304 responses have no body. Other responses use
 Content-Length, chunked framing or EOF. Informational heads are consumed before
 the final response. Chunk extensions and trailers are consumed without changing
-response headers. Ambiguous framing is rejected.
+response headers; trailers are discarded unparsed, up to 16 lines within
+16 KiB. Ambiguous framing is rejected. Lines may end in CRLF or a bare LF
+(RFC 9112 §2.2); a bare CR, controls in field values and obsolete line folding
+are rejected.
 
 ## Keep-alive and retries
 

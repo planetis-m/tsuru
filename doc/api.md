@@ -68,6 +68,11 @@ are not revalidated or restricted by the receive limit.
 Sends copy and mask into a reusable wire buffer. Sending a byte sequence avoids
 a sequence-to-string conversion. The client retains its largest send and
 receive buffer capacities until closure; returned messages own their payloads.
+Received payloads are assembled in place: buffered bytes are copied once into
+the message, and a large frame payload with nothing buffered is read straight
+into it. A data frame reserves its announced length, bounded by `maxMessage`.
+The input buffer starts at 1 KiB and grows to 16 KiB reads while the peer
+keeps it full.
 
 ## Receiving
 
@@ -164,7 +169,8 @@ All setup failures release acquired resources.
 | `UnimplementedOperation` | Secure URL in a build without TLS |
 
 The upgrade response must be HTTP/1.1 status 101 with upgrade tokens and the
-exact accept key. Duplicate accept/subprotocol fields, unsolicited extensions
+exact accept key. It is tokenized by the same parser as HTTP responses; the
+reason phrase is optional and ignored. Duplicate accept/subprotocol fields, unsolicited extensions
 and unoffered subprotocols are rejected. Bytes following the head are retained
 for receive.
 
@@ -175,8 +181,8 @@ unsupported.
 
 | Import | Contents |
 | --- | --- |
-| `tsuru/frame` | Frame parsing, headers and masking |
-| `tsuru/protocol` | Message assembly, UTF-8 and close handling |
+| `tsuru/frame` | Frame header parsing, frame parsing, headers and masking |
+| `tsuru/protocol` | Streamed message assembly, UTF-8 and close handling |
 | `tsuru/handshake` | Endpoint parsing, opening request construction and upgrade validation |
 
 `tsuru/handshake` exports `Endpoint`. `parseEndpoint` returns its host,
@@ -184,7 +190,12 @@ authority, encoded target, port and TLS selection. `buildRequest` takes that
 value and a base64 nonce.
 
 `parseFrame` requires `0 <= start <= data.len` and a nonnegative payload limit.
-`handleFrame` takes a parsed frame and a nonnegative message limit.
+`parseFrameHeader` validates a header without needing its payload.
+`handleFrame` takes a parsed frame and a nonnegative message limit; the
+client itself uses its parts: `startData` checks a data frame header against
+fragment order and the limit, payload bytes are appended to `payload`, and
+`finishMessage` validates text and moves the message out. Control frames go
+to `handleControl`.
 `frameHeader` includes the four-byte mask key. `encodeFrame` returns an owned
 wire string; its `var string` overload reuses storage and accepts character or
 byte views. Input must not alias the output. Supply a fresh cryptographic mask

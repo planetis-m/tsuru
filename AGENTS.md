@@ -26,6 +26,7 @@ inherit that instant and may tighten it, never renew it.
 | `tsuru/http` | Pure HTTP heads and request serialization |
 | `tsuru/httpclient` | Request deadlines, keep-alive and body sequencing |
 | `tsuru/internal/endpoint` | Shared URL parsing |
+| `tsuru/internal/head` | One-pass response head tokenizer for HTTP and the upgrade |
 | `tsuru/internal/net`, `tsuru/internal/tls` | Socket and OpenSSL declarations |
 | `tsuru/internal/transport` | Resources and passive I/O |
 | `tsuru/internal/buffer` | Bulk string operations |
@@ -72,3 +73,5 @@ protocol checks active; testkit assertions remain enabled in danger.
 
 Use `tests/hashi.py --compat` for optional integration against the sibling
 server. It uses a temporary copy; do not change that checkout.
+Measure performance changes with `bench/` (see verification) against the
+previous build, interleaved, and with cachegrind for per-byte paths.
