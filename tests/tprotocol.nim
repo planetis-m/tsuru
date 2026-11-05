@@ -1,4 +1,5 @@
 import testkit
+import std/strutils
 import tsuru/[frame, protocol]
 import wire
 
@@ -57,6 +58,56 @@ block utf8_and_limits:
   doAssert handleFrame(s, Frame(fin: true, opcode: opBinary, payload: "123"), 2).code == 1009
   discard handleFrame(s, Frame(opcode: opBinary, payload: "12"), 3)
   doAssert handleFrame(s, Frame(fin: true, opcode: opContinuation, payload: "34"), 3).code == 1009
+
+block header_only:
+  # The header parser never needs or copies the payload.
+  var h = FrameHeader()
+  let wire = serverFrame(opBinary, newString(70000), fin = false)
+  let parsed = parseFrameHeader(toOpenArray(wire, 0, 9), h, 100000)
+  doAssert parsed.status == psOk and parsed.consumed == 10
+  doAssert h.length == 70000 and not h.fin and h.opcode == opBinary
+  doAssert parseFrameHeader(toOpenArray(wire, 0, 9), h, 69999).status == psTooLarge
+  doAssert parseFrameHeader(toOpenArray(wire, 0, 8), h).status == psIncomplete
+  doAssert parseFrameHeader("\x89\x7e\x00\x7e", h).status == psError
+
+block streamed_assembly:
+  var s = MessageState()
+  doAssert startData(s, FrameHeader(opcode: opText, length: 3), 8) == 0
+  s.payload.add "\xe2\x82"
+  doAssert startData(s, FrameHeader(opcode: opText, length: 1), 8) == 1002
+  doAssert startData(s, FrameHeader(fin: true, opcode: opContinuation, length: 7), 8) == 1009
+  doAssert startData(s, FrameHeader(fin: true, opcode: opContinuation, length: 1), 8) == 0
+  s.payload.add "\xac"
+  let a = finishMessage(s)
+  doAssert a.kind == akMessage and a.data == "\xe2\x82\xac" and not a.binary
+  doAssert s.payload.len == 0
+  doAssert startData(s, FrameHeader(fin: true, opcode: opContinuation), 8) == 1002
+  doAssert startData(s, FrameHeader(fin: true, opcode: opText, length: 1), 8) == 0
+  s.payload.add "\xff"
+  doAssert finishMessage(s).code == 1007
+  var b = MessageState()
+  doAssert startData(b, FrameHeader(fin: true, opcode: opBinary, length: 1), 1) == 0
+  b.payload.add "\xff"
+  doAssert finishMessage(b).binary
+
+block controls:
+  doAssert handleControl(opPing, "abc").kind == akPong
+  doAssert handleControl(opPing, "abc").data == "abc"
+  doAssert handleControl(opPong, "abc").kind == akNone
+  for code in [999, 1004, 1005, 1006, 1015, 1016, 2999, 5000]:
+    doAssert handleClose(closeBody(code)).code == 1002
+  for code in [1000, 1003, 1007, 1014, 3000, 4999]:
+    doAssert handleClose(closeBody(code, "ok")).code == code
+  doAssert handleClose(closeBody(1000, "\xc3\x28")).code == 1007
+
+block utf8_word_boundaries:
+  # Multibyte sequences and errors at every offset across the 8/32-byte ASCII steps.
+  for offset in 0..40:
+    let prefix = repeat("a", offset)
+    doAssert validUtf8(prefix & "\xf0\x9f\x98\x80" & repeat("b", 40))
+    doAssert not validUtf8(prefix & "\x80" & repeat("b", 40))
+    doAssert not validUtf8(prefix & "\xe2\x82")
+    doAssert not validUtf8(repeat("c", 40) & prefix & "\xed\xa0\x80")
 
 block closing:
   var s = MessageState()

@@ -135,6 +135,16 @@ proc main(url, mode, caFile: string) {.passive.} =
         let last = ws.receive()
         doAssert last.kind == wmClose and last.code == 1001 and last.data == "bye"
         doAssert last.closeSource == csPeer
+      elif mode == "large-partial-timeout":
+        doAssert ws.recv(dl = afterMs(50)).isNone
+        doAssert ws.open
+        doAssert ws.send("after timeout")
+        let m = ws.receive(dl = afterMs(2000))
+        doAssert m.kind == wmBinary and m.data.len == 65536
+        for i in 0..<m.data.len: doAssert m.data[i] == char(i mod 251)
+        let t = ws.receive(dl = afterMs(2000))
+        doAssert t.kind == wmText and t.data == repeat("a", 20000) & repeat("b", 20000)
+        doAssert ws.close().closeSource == csPeer
       elif mode == "control-timeout":
         doAssert ws.recv(dl = afterMs(75)).isNone
         doAssert ws.open

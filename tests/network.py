@@ -173,6 +173,22 @@ def fixture(sock, mode, wire=None, code=1002, client_done=None):
         assert read_frame(sock) == (8, struct.pack("!H", 1001) + b"bye")
         assert sock.recv(1) == b""
         return
+    if mode == "large-partial-timeout":
+        # Expiry in the middle of a large payload, then fragments read straight into the message.
+        handshake(sock)
+        wire = frame(2, bytes(i % 251 for i in range(65536)))
+        sock.sendall(wire[:30000])
+        time.sleep(0.15)
+        assert read_frame(sock) == (1, b"after timeout")
+        sock.sendall(wire[30000:])
+        sock.sendall(frame(1, b"a" * 20000, False) + frame(9, b"probe"))
+        assert read_frame(sock) == (10, b"probe")
+        sock.sendall(frame(0, b"b" * 20000, True))
+        op, data = read_frame(sock)
+        assert op == 8
+        sock.sendall(frame(8, data))
+        assert sock.recv(1) == b""
+        return
     if mode == "control-timeout":
         handshake(sock)
         for _ in range(8):
@@ -327,7 +343,8 @@ def main():
     binary = args.binary.resolve()
     for mode in ("echo", "drop", "fragments", "empty-close", "eof", "protocols",
                  "bad-upgrade", "handshake-timeout", "read-timeout", "write-timeout",
-                 "buffered-timeout", "partial-timeout", "control-timeout", "control-backpressure",
+                 "buffered-timeout", "partial-timeout", "large-partial-timeout", "control-timeout",
+                 "control-backpressure",
                  "commands", "large", "reset",
                  "close-handshake", "close-abort", "close-timeout", "close-eof", "close-protocol-error", "resources"):
         run_case(binary, mode)
@@ -355,7 +372,8 @@ def main():
             run_case(binary, "echo", tls=context, ca=str(cert), hostname="localhost")
             assert server_names[-1] == "localhost", "DNS connections must send SNI"
             run_case(binary, "write-timeout", tls=context, ca=str(cert))
-            for mode in ("read-timeout", "partial-timeout", "control-timeout", "large"):
+            for mode in ("read-timeout", "partial-timeout", "large-partial-timeout",
+                         "control-timeout", "large"):
                 run_case(binary, mode, tls=context, ca=str(cert))
             run_case(binary, "tls-reject", tls=context)
             run_case(binary, "tls-reject", tls=context, ca=str(cert), hostname="wrong.localhost")
