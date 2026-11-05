@@ -45,22 +45,11 @@ proc close*(c: HttpClient) =
   clear(c.input)
   c.remaining = 0
 
-proc prepareEndpoint(url: string; ep: var Endpoint) {.raises.} =
-  ep = parseEndpoint(url, "http", "https")
-
-proc prepareHead(authority, meth, target: string; length: int;
-                 headers: seq[Header]; head: var string) {.raises.} =
-  head = requestHead(authority, meth, target, length, headers)
-
-proc decodeHead(head: openArray[char]; meth: string; parsed: var ResponseHead) {.raises.} =
-  parsed = parseResponseHead(head, meth)
-
 proc connectHttp*(url: string; dl: Deadline; options = initHttpOptions()): HttpClient
     {.passive, raises.} =
   ## Connect HTTP or verified HTTPS under dl. Setup failure releases all resources.
   ## The URL's encoded path/query is the default request target.
-  var ep = Endpoint()
-  prepareEndpoint(url, ep)
+  let ep = parseEndpoint(url, "http", "https")
   if options.maxBody <= 0 or '\0' in options.caFile: raise ValueError
   checkDeadline(dl)
   result = HttpClient(authority: ep.authority, target: ep.target,
@@ -77,13 +66,13 @@ proc needMore(c: HttpClient; dl: Deadline) {.passive, raises.} =
 
 proc readHead(c: HttpClient; meth: string; dl: Deadline): ResponseHead {.passive, raises.} =
   ## Parse the head in place once findHeadEnd has seen its blank line.
-  result = ResponseHead()
   var scan = HeadScanner()
   while true:
     let n = findHeadEnd(scan, unread(c.input))
     if n == ParseBad: raise ContentTooLong
     if n >= 0:
-      decodeHead(toOpenArray(c.input.data, c.input.pos, c.input.pos + n - 1), meth, result)
+      result = parseResponseHead(
+        toOpenArray(c.input.data, c.input.pos, c.input.pos + n - 1), meth)
       c.input.pos += n
       return
     needMore(c, dl)
@@ -100,9 +89,8 @@ proc request*(c: HttpClient; dl: Deadline; meth = "GET"; target = "";
   ## Invalid request inputs are rejected before I/O, preserving an idle connection.
   if c.phase == hpClosed: raise EndOfStreamError
   if c.phase != hpReady: raise ValueError
-  var head = ""
-  prepareHead(c.authority, meth,
-    (if target.len == 0: c.target else: target), body.len, headers, head)
+  var head = requestHead(c.authority, meth,
+    (if target.len == 0: c.target else: target), body.len, headers)
   if body.len <= SmallBody: head.add body
   c.deadline = dl
   c.received = 0

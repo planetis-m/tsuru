@@ -122,25 +122,14 @@ proc emit[T: char | byte](ws: WebSocket; op: Opcode; data: openArray[T]; dl: Dea
     transportFailed(ws, e)
     result = false
 
-proc prepareHandshake(url: string; options: WebSocketOptions; endpoint: var Endpoint;
-                      key, request: var string) {.raises.} =
-  endpoint = parseEndpoint(url)
-  key = encode(randomBytes(16))
-  request = buildRequest(endpoint, key, options)
-
-proc checkHandshake(head: openArray[char]; key: string; protocols: seq[string];
-                    selected: var string) {.raises.} =
-  selected = validateResponse(head, key, protocols)
-
 proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never): WebSocket
     {.passive, raises.} =
   ## Complete TCP, optional TLS and HTTP upgrade within a single operation budget.
   ## TLS requires -d:tsuruTls; unsupported wss raises UnimplementedOperation.
-  var endpoint = Endpoint()
-  var key = ""
-  var request = ""
   let deadline = earlier(afterMs(options.timeoutMs), dl)
-  prepareHandshake(url, options, endpoint, key, request)
+  let endpoint = parseEndpoint(url)
+  let key = encode(randomBytes(16))
+  let request = buildRequest(endpoint, key, options)
   checkDeadline(deadline)
   result = WebSocket(maxMessage: options.maxMessage, timeoutMs: options.timeoutMs,
                      input: initInput())
@@ -154,8 +143,8 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
       if not fill(result, deadline): raise EndOfStreamError
       headLen = findHeadEnd(scan, result.input.data)
       if headLen == ParseBad: raise ContentTooLong
-    checkHandshake(toOpenArray(result.input.data, 0, headLen - 1), key, options.protocols,
-                   result.selectedProtocol)
+    result.selectedProtocol = validateResponse(
+      toOpenArray(result.input.data, 0, headLen - 1), key, options.protocols)
     result.input.pos = headLen
     result.status = connOpen
   except ErrorCode as e:
