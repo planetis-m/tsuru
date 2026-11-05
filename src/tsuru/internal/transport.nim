@@ -78,7 +78,7 @@ proc open*(t: var Transport; host: string; port: uint16; secure: bool;
   discard submitConnect(socketFd, sa, addressLen, dl, c, addr n)
   suspend()
   if n != 0: raise toErr(n)
-  setNoDelay(socketFd)
+  net.setNoDelay(socketFd)
   when defined(tsuruTls):
     if secure:
       let tlsMode = tlsMethod()
