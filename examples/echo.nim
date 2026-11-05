@@ -19,7 +19,7 @@ proc main(url: string) {.passive.} =
           echo "unexpected echo"
           atomicStore(failed, 1)
         else: echo message.data
-      of None():
+      of None:
         echo "echo deadline expired"
         atomicStore(failed, 1)
       if ws.close().closeSource != csPeer:

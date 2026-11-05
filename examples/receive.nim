@@ -24,7 +24,7 @@ proc main(url, token, subprotocol, caFile: string) {.passive.} =
         of wmBinary: echo "Binary message: ", message.data.len, " bytes"
         of wmClose:
           echo "Closed: ", message.closeSource, " ", message.code, " ", message.data
-      of None(): discard
+      of None: discard
   except ErrorCode as e:
     echo "Connection failed: ", e
     atomicStore(failed, 1)
