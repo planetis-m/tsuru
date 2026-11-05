@@ -30,6 +30,7 @@ inherit that instant and may tighten it, never renew it.
 | `tsuru/internal/net`, `tsuru/internal/tls` | Socket and OpenSSL declarations |
 | `tsuru/internal/transport` | Resources and passive I/O |
 | `tsuru/internal/buffer` | Bulk string operations |
+| `tsuru/internal/input` | Read-ahead input shared by both clients |
 
 Import `tsuru/websocket` or `tsuru/httpclient` explicitly; `import tsuru` is a
 facade that only re-exports both clients and their shared types.
