@@ -121,6 +121,9 @@ def fixture(peer, mode):
     assert peer.recv(1) == b"", "HTTP terminal/explicit close must release the socket"
 
 
+ORDERLY = ("keepalive", "chunked", "chunked-large", "large", "leftover")
+
+
 def run_case(binary, mode, *, tls=None, ca="", hostname=None, ipv6=False):
     errors = []
     with socket.socket(socket.AF_INET6 if ipv6 else socket.AF_INET) as listener:
@@ -137,7 +140,9 @@ def run_case(binary, mode, *, tls=None, ca="", hostname=None, ipv6=False):
                         sock.settimeout(10)
                         if tls:
                             try:
-                                sock = tls.wrap_socket(sock, server_side=True)
+                                # Orderly closes after a complete body must send close_notify.
+                                sock = tls.wrap_socket(sock, server_side=True,
+                                                       suppress_ragged_eofs=path not in ORDERLY)
                             except (ssl.SSLError, ConnectionResetError):
                                 if path == "tls-reject": return
                                 raise

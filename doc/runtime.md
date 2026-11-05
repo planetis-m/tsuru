@@ -51,6 +51,12 @@ TLS verifies certificate chains and the DNS hostname or IP address. DNS names
 also use SNI. System trust paths are the default; set `options.caFile` to use
 a custom PEM trust file. Certificate verification is always enabled.
 
+Orderly closes send a TLS close_notify without waiting for the peer's: a
+completed WebSocket close handshake, and an HTTP connection released between
+exchanges (Connection: close, or `close` after a complete body). Aborts,
+failures and unread responses close the socket only. Each connection creates
+its own OpenSSL context and loads the trust store again.
+
 Without TLS support, secure URLs raise `UnimplementedOperation` before TCP
 connection setup.
 

@@ -290,7 +290,9 @@ def resource_fixture(listener):
                     fixture(peer, "close-abort" if mode == "abort" else mode)
 
 
-def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False, hostname=None):
+def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False, hostname=None,
+             orderly=False):
+    # orderly: a TLS client must end with close_notify, not a bare TCP close.
     errors = []
     client_done = threading.Event()
     family = socket.AF_INET6 if ipv6 else socket.AF_INET
@@ -309,7 +311,8 @@ def run_case(binary, mode, *, wire=None, code=1002, tls=None, ca="", ipv6=False,
                     peer.settimeout(10)
                     if tls:
                         try:
-                            peer = tls.wrap_socket(peer, server_side=True)
+                            peer = tls.wrap_socket(peer, server_side=True,
+                                                   suppress_ragged_eofs=not orderly)
                         except (ssl.SSLError, ConnectionResetError):
                             if mode in ("tls-reject", "no-tls"):
                                 return
@@ -368,8 +371,8 @@ def main():
             context.load_cert_chain(cert, key)
             server_names = []
             context.set_servername_callback(lambda peer, name, ctx: server_names.append(name))
-            run_case(binary, "echo", tls=context, ca=str(cert))
-            run_case(binary, "echo", tls=context, ca=str(cert), hostname="localhost")
+            run_case(binary, "echo", tls=context, ca=str(cert), orderly=True)
+            run_case(binary, "echo", tls=context, ca=str(cert), hostname="localhost", orderly=True)
             assert server_names[-1] == "localhost", "DNS connections must send SNI"
             run_case(binary, "write-timeout", tls=context, ca=str(cert))
             for mode in ("read-timeout", "partial-timeout", "large-partial-timeout",

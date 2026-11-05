@@ -7,6 +7,11 @@
 - HTTP keep-alive: bytes still buffered after a complete response were parsed
   as the next response. The connection is now released instead of reused
   (`leftover` fixture).
+- TLS: orderly closes now send close_notify (best effort, nonblocking): after
+  a WebSocket close handshake and when an HTTP connection is released between
+  exchanges. The TLS fixtures for these paths reject a bare TCP close.
+  Possible later optimization, not done: share one `SSL_CTX` per CA file
+  instead of creating a context and reloading the trust store per connection.
 
 ### API cleanup
 

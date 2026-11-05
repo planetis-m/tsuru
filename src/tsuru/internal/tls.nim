@@ -26,6 +26,7 @@ proc tlsRead*(s: ptr Ssl; buf: pointer; len: cint): cint
   {.importc: "SSL_read", header: "<openssl/ssl.h>".}
 proc tlsWrite*(s: ptr Ssl; buf: pointer; len: cint): cint
   {.importc: "SSL_write", header: "<openssl/ssl.h>".}
+proc tlsShutdown*(s: ptr Ssl): cint {.importc: "SSL_shutdown", header: "<openssl/ssl.h>".}
 proc tlsError*(s: ptr Ssl; ret: cint): cint
   {.importc: "SSL_get_error", header: "<openssl/ssl.h>".}
 proc clearErrors*() {.importc: "ERR_clear_error", header: "<openssl/err.h>".}

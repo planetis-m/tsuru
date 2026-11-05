@@ -40,6 +40,8 @@ proc open*(c: HttpClient): bool {.inline.} =
 
 proc close*(c: HttpClient) =
   ## Release immediately, including an unread response. Idempotent; never suspends.
+  ## Between exchanges, a TLS connection first sends close_notify.
+  if c.phase == hpReady: closeNotify(c.transport)
   close(c.transport)
   c.phase = hpClosed
   clear(c.input)

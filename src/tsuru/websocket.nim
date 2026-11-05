@@ -176,9 +176,10 @@ proc ping*(ws: WebSocket; data = ""; dl = never): bool {.passive.} =
 proc closeWith(ws: WebSocket; code: int; reason: string; source: CloseSource;
                payload: string; dl: Deadline): Message {.passive.} =
   ## Record the outcome, answer with a Close frame unless one was already sent,
-  ## then release.
+  ## then release; TLS connections also send close_notify.
   ws.closure = CloseInfo(code: code, reason: reason, source: source)
   if ws.phase == connClosing or emit(ws, opClose, toOpenArray(payload, 0, payload.len - 1), dl):
+    closeNotify(ws.transport)
     release(ws)
   result = closedMessage(ws)
 

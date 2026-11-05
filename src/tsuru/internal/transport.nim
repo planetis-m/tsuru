@@ -44,6 +44,16 @@ proc close*(t: var Transport) =
   release(t)
   `=wasMoved`(t)
 
+proc closeNotify*(t: var Transport) =
+  ## Best effort before an orderly close: send a TLS close_notify without
+  ## awaiting the peer's. A no-op for plain TCP; never suspends.
+  when defined(tsuruTls):
+    let ssl = t.ssl
+    if ssl != nil:
+      clearErrors()
+      discard tlsShutdown(ssl)
+      clearErrors()
+
 proc checkDeadline*(dl: Deadline) {.raises.} =
   if dl <= monoNow(): raise TimeoutError
 
