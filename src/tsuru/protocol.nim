@@ -175,18 +175,3 @@ proc feed*(s: var MessageState; input: openArray[char]; maxMessage: int;
       s.frameFin = h.fin
       s.frameLeft = h.length
       result = Action(kind: akNone)
-
-proc handleFrame*(s: var MessageState; f: Frame;
-                  maxMessage = DefaultMaxMessage): Action
-    {.deprecated: "the client uses feed".} =
-  ## Assemble messages, validate text and closes, and handle interleaved control frames.
-  ## Pass frames accepted by parseFrame; wire-level invariants belong to the parser.
-  ## maxMessage is nonnegative.
-  if f.opcode.isControl:
-    return handleControl(f.opcode, f.payload)
-  let code = startData(s, FrameHeader(fin: f.fin, opcode: f.opcode,
-                                      length: f.payload.len), maxMessage)
-  if code != 0: return failure(code)
-  s.data.add f.payload
-  if f.fin: result = finishMessage(s)
-  else: result = Action(kind: akNone)

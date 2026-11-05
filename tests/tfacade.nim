@@ -30,7 +30,7 @@ block overloads:
   let ws = WebSocket()
   let client = HttpClient()
   doAssert operation(ws) == "closed" and operation(client) == "closed"
-  doAssert ws.state == wsClosed and not client.open # deprecated state still works
+  doAssert not ws.open and not client.open
   client.close()
   ws.abort()
 

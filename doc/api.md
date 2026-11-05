@@ -197,7 +197,6 @@ bytes straight to `payload` and report them with `appended`. Other action kinds
 are outcomes. Its parts are public too: `startData` checks a data frame header
 against fragment order and the limit, `finishMessage` validates text and moves
 the message out, and `handleControl` decodes control frames.
-`parseFrame` and `handleFrame` are deprecated; the client no longer uses them.
 `frameHeader` includes the four-byte mask key. `encodeFrame` returns an owned
 wire string; its `var string` overload reuses storage and accepts character or
 byte views. Input must not alias the output. Supply a fresh cryptographic mask

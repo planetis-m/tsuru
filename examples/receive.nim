@@ -13,7 +13,7 @@ proc main(url, token, subprotocol, caFile: string) {.passive.} =
       options.headers = @[Header(name: "Authorization", value: "Bearer " & token)]
     if subprotocol.len > 0: options.protocols = @[subprotocol]
     options.caFile = caFile
-    let ws = connectWebSocket(url, options, dl = afterMs(10_000))
+    let ws = connectWebSocket(url, afterMs(10_000), options)
     defer: ws.abort()
     echo "Connected; selected protocol: ", ws.protocol
     while ws.open:

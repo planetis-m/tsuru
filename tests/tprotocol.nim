@@ -153,12 +153,4 @@ block closing:
   doAssert only(serverFrame(opClose, "x")).code == 1002
   doAssert only(serverFrame(opClose, "\x03\xed")).code == 1002
 
-block deprecated_frame_path:
-  # parseFrame and handleFrame remain for source compatibility.
-  var f = Frame()
-  let wire = serverFrame(opText, "hi")
-  doAssert parseFrame(wire, 0, f).consumed == wire.len and f.payload == "hi"
-  var s = MessageState()
-  doAssert handleFrame(s, f).data == "hi"
-
 echo "protocol tests passed"

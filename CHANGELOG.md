@@ -16,11 +16,11 @@
 ### API cleanup
 
 - `connectWebSocket(url, dl = never, options = initWebSocketOptions())` takes
-  its parameters in the same order as `connectHttp(url, dl, options)`. The
-  previous `connectWebSocket(url, options, dl = never)` remains as a deprecated
-  overload.
-- `WebSocket.state` is deprecated; use `open`, which has always given the same
-  answer outside `close`.
+  its parameters in the same order as `connectHttp(url, dl, options)`.
+- Removed: the previous `connectWebSocket(url, options, dl = never)` order;
+  call `connectWebSocket(url, dl, options)`.
+- Removed: `WebSocket.state` and `WebSocketState`; use `open`, which has
+  always given the same answer outside `close`.
 - `tsuru/handshake` no longer re-exports the internal `Endpoint` type;
   `parseEndpoint` results and their fields work as before.
 - `tsuru/http` no longer exports the undocumented `validToken` and
@@ -29,8 +29,9 @@
   `protocol.feed`, with `payloadLeft` and `appended` for payload read straight
   into the message, and the new `akIncomplete` action kind. `MessageState`
   now also holds the current frame's progress. The client and the seeded test
-  both use this path; `parseFrame` and `handleFrame`, which the client no
-  longer used, are deprecated.
+  both use this path.
+- Removed: `parseFrame`, `handleFrame` and the `Frame` type, which the client
+  no longer used; use `parseFrameHeader` and `protocol.feed`.
 
 ### Performance
 
@@ -88,8 +89,9 @@ with a bare LF (§2.2), and the upgrade response's reason phrase is optional.
 
 ### API
 
-Source compatible. `parseResponseHead`, `hasToken`, `validateResponse` and
-`validUtf8` take `openArray[char]` (strings still work). New pure helpers:
+Source compatible apart from the removals under API cleanup.
+`parseResponseHead`, `hasToken`, `validateResponse` and `validUtf8` take
+`openArray[char]` (strings still work). New pure helpers:
 `FrameHeader`, `parseFrameHeader` and `isControl` in `tsuru/frame`;
 `startData`, `payload`, `finishMessage`, `handleControl` and `handleClose` in
 `tsuru/protocol`. `MaxHandshake` now bounds only the received upgrade head.

@@ -19,8 +19,6 @@ const
   AbnormalClosure = 1006
 
 type
-  WebSocketState* = enum
-    wsClosed, wsOpen
   ConnectionPhase = enum
     connClosed, connOpen, connClosing
   MessageKind* = enum
@@ -49,10 +47,6 @@ type
     sent: int ## Bytes written from sendBuffer; a paused pong preserves both across recv expiry.
     message: MessageState ## Frame progress and the message under assembly.
     closure: CloseInfo
-
-proc state*(ws: WebSocket): WebSocketState {.inline, deprecated: "use open".} =
-  ## Current state of the connection; does not suspend. Equivalent to open.
-  if ws.phase == connClosed: wsClosed else: wsOpen
 
 proc open*(ws: WebSocket): bool {.inline.} =
   ## Whether application messages may be sent; does not suspend.
@@ -144,11 +138,6 @@ proc connectWebSocket*(url: string; dl = never; options = initWebSocketOptions()
   except ErrorCode as e:
     terminate(result, csTransportError)
     raise e
-
-proc connectWebSocket*(url: string; options: WebSocketOptions; dl = never): WebSocket
-    {.passive, raises, deprecated: "use connectWebSocket(url, dl, options)".} =
-  ## The previous parameter order.
-  connectWebSocket(url, dl, options)
 
 proc send*(ws: WebSocket; data: string; binary = false; dl = never): bool {.passive.} =
   ## Send one masked message. The caller supplies valid UTF-8 for text messages.

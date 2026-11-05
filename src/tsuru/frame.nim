@@ -18,11 +18,6 @@ type
     fin*: bool
     opcode*: Opcode
     length*: int
-  Frame* = object
-    ## One unmasked server frame, owning its payload.
-    fin*: bool
-    opcode*: Opcode
-    payload*: string
 
 proc isControl*(op: Opcode): bool {.inline.} = ord(op) >= 8
 
@@ -136,17 +131,3 @@ proc parseFrameHeader*(data: openArray[char]; h: var FrameHeader;
   else: discard
   h = FrameHeader(fin: fin, opcode: opcode, length: int(size))
   result = ParseResult(status: psOk, consumed: head)
-
-proc parseFrame*(data: string; start: int; frame: var Frame;
-                 maxPayload = DefaultMaxMessage): ParseResult
-    {.deprecated: "use parseFrameHeader, or protocol.feed".} =
-  ## Parse one complete unmasked server frame, copying its payload.
-  ## The caller supplies 0 <= start <= data.len and a nonnegative maxPayload.
-  var h = FrameHeader()
-  result = parseFrameHeader(toOpenArray(data, start, data.len - 1), h, maxPayload)
-  if result.status != psOk: return
-  let first = start + result.consumed
-  if h.length > data.len - first: return ParseResult(status: psIncomplete)
-  frame = Frame(fin: h.fin, opcode: h.opcode)
-  if h.length > 0: frame.payload = data.substr(first, first + h.length - 1)
-  result.consumed += h.length
