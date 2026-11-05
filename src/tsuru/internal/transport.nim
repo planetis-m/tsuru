@@ -109,6 +109,36 @@ proc open*(t: var Transport; host: string; port: uint16; secure: bool;
           elif err == TlsWantWrite: waitReady(t.fd, {evWrite}, dl)
           else: raise PermissionDenied
 
+const
+  ReadWouldBlock = -1
+  ReadWantsWrite = -2
+  ReadInterrupted = -3
+
+proc tryRead(t: var Transport; p: pointer; n: int): int {.raises.} =
+  ## One nonblocking read of up to n bytes: the count, zero at end of stream,
+  ## or a negative readiness code. Never suspends.
+  when defined(tsuruTls):
+    let ssl = t.ssl
+    if ssl != nil:
+      clearErrors()
+      let got = tlsRead(ssl, p, cint(min(n, int(high(cint)))))
+      if got > 0: return int(got)
+      let err = tlsError(ssl, got)
+      if err == TlsClosed: return 0
+      if err == TlsWantRead: return ReadWouldBlock
+      if err == TlsWantWrite: return ReadWantsWrite
+      raise IOError
+  let got = net.recv(t.fd, p, csize_t(n), 0)
+  if got >= 0: return got
+  let err = errno()
+  if err == EAGAIN: return ReadWouldBlock
+  if err == EINTR: return ReadInterrupted
+  raise IOError
+
+proc awaitRead(t: var Transport; code: int; dl: Deadline) {.passive, raises.} =
+  if code == ReadWouldBlock: waitReady(t.fd, {evRead}, dl)
+  elif code == ReadWantsWrite: waitReady(t.fd, {evWrite}, dl)
+
 proc readSome*[T: char | byte](t: var Transport; buf: var openArray[T]; dl: Deadline): int
     {.passive, raises.} =
   ## Read into task-owned memory using a nonblocking syscall, then wait if needed.
@@ -116,23 +146,27 @@ proc readSome*[T: char | byte](t: var Transport; buf: var openArray[T]; dl: Dead
   if buf.len == 0: return
   while true:
     checkDeadline(dl)
-    when defined(tsuruTls):
-      let ssl = t.ssl
-      if ssl != nil:
-        clearErrors()
-        let n = tlsRead(ssl, addr buf[0], cint(buf.len))
-        if n > 0: return int(n)
-        let err = tlsError(ssl, n)
-        if err == TlsClosed: return 0
-        if err == TlsWantRead: waitReady(t.fd, {evRead}, dl)
-        elif err == TlsWantWrite: waitReady(t.fd, {evWrite}, dl)
-        else: raise IOError
-        continue
-    let n = net.recv(t.fd, addr buf[0], csize_t(buf.len), 0)
+    let n = tryRead(t, addr buf[0], buf.len)
     if n >= 0: return n
-    let err = errno()
-    if err == EAGAIN: waitReady(t.fd, {evRead}, dl)
-    elif err != EINTR: raise IOError
+    awaitRead(t, n, dl)
+
+proc readInto*(t: var Transport; buf: var string; step: int; dl: Deadline): int
+    {.passive, raises.} =
+  ## Append up to step bytes straight into buf's spare capacity; zero means end
+  ## of stream. The store is closed before any wait, so buf never suspends open.
+  result = 0
+  let old = buf.len
+  while true:
+    checkDeadline(dl)
+    var n = ReadInterrupted
+    let p = beginStore(buf, old + step, old)
+    try:
+      n = tryRead(t, p, step)
+    finally:
+      endStore(buf)
+      buf.setLen(old + max(n, 0))
+    if n >= 0: return n
+    awaitRead(t, n, dl)
 
 proc writeAll*[T: char | byte](t: var Transport; data: openArray[T]; sent: var int; dl: Deadline)
     {.passive, raises.} =

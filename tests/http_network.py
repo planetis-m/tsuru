@@ -57,7 +57,8 @@ def fixture(peer, mode):
         if mode == "chunked":
             wire = (b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </x>\r\n\r\n"
                     b"HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\n\r\n"
-                    b"3;id=1\r\nhel\r\n4\r\nlo\0\xff\r\n0\r\nX-Trailer: done\r\nContent-Length: 999\r\n\r\n")
+                    b"3;id=1\r\nhel\r\n4\r\nlo\0\xff\r\n0\r\nX-Trailer: done\r\nContent-Length: 999\r\n"
+                    b" discarded: obs-fold\r\n\r\n")
             for byte in wire:
                 peer.sendall(bytes([byte]))
         elif mode == "http10":
@@ -68,6 +69,14 @@ def fixture(peer, mode):
         assert second == "POST /second HTTP/1.1" and body == b"payload"
         fixed(peer, b"second", status=201, fields=b"Connection: close\r\n",
               version=b"1.0" if mode == "http10" else b"1.1")
+    elif mode == "chunked-large":
+        body = bytes(i % 253 for i in range(200001))
+        peer.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                     b"%x\r\n" % 100000 + body[:100000] + b"\r\n" +
+                     b"%x;ext=1\r\n" % 100001 + body[100000:] + b"\r\n0\r\n\r\n")
+        second, _, _ = read_request(peer)
+        assert second == "GET /chat?q=%20 HTTP/1.1"
+        fixed(peer, body[:70000])
     elif mode == "eof":
         peer.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nbye")
         peer.shutdown(socket.SHUT_WR)
@@ -84,8 +93,11 @@ def fixture(peer, mode):
         peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n")
     elif mode == "bad-chunk":
         peer.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nQ\r\n")
-    elif mode == "bad-trailer":
-        peer.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n folded: bad\r\n\r\n")
+    elif mode == "bad-chunk-end":
+        peer.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabcX\r\n0\r\n\r\n")
+    elif mode == "trailer-limit":
+        peer.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n" +
+                     b"X-Trailer: t\r\n" * 17 + b"\r\n")
     elif mode == "too-large":
         fixed(peer, b"12345")
     elif mode == "chunk-limit":
@@ -148,8 +160,8 @@ def main():
     parser.add_argument("--tls", action="store_true")
     args = parser.parse_args()
     binary = args.binary.resolve()
-    for mode in ("keepalive", "chunked", "http10", "unread-body", "no-body", "eof", "large",
-                 "slow-head", "slow-body", "truncated", "malformed", "bad-chunk", "bad-trailer",
+    for mode in ("keepalive", "chunked", "chunked-large", "http10", "unread-body", "no-body", "eof", "large",
+                 "slow-head", "slow-body", "truncated", "malformed", "bad-chunk", "bad-chunk-end", "trailer-limit",
                  "too-large", "chunk-limit", "eof-limit", "huge-head", "upgrade", "abort", "expired-request", "resources"):
         run_case(binary, mode)
     run_case(binary, "keepalive", ipv6=True)
@@ -167,7 +179,7 @@ def main():
             context.set_servername_callback(lambda peer, name, ctx: names.append(name))
             run_case(binary, "keepalive", tls=context, ca=str(cert), hostname="localhost")
             assert names[-1] == "localhost"
-            for mode in ("chunked", "large", "slow-head", "slow-body", "truncated"):
+            for mode in ("chunked", "chunked-large", "large", "slow-head", "slow-body", "truncated"):
                 run_case(binary, mode, tls=context, ca=str(cert))
             run_case(binary, "tls-reject", tls=context)
             run_case(binary, "tls-reject", tls=context, ca=str(cert), hostname="wrong.localhost")

@@ -1,14 +1,24 @@
 ## Sequential HTTP/1.1 requests over the shared TCP/TLS transport.
 ## Own a client from one passive task. Each request's absolute deadline spans
 ## its writes, informational responses, final head and all body reads.
-import std/[ioring, strutils]
+import std/ioring
 from std/http/httpparse import HeadScanner, findHeadEnd, parseChunkSize,
-  ParseBad, MaxHeadLen, MaxChunkSizeDigits, MaxChunkExtLen,
-  MaxTrailerCount
+  parseCrLf, ParseBad, ParseIncomplete, MaxHeadLen, MaxTrailerCount
 import tsuru/http
 import tsuru/internal/[transport, buffer, endpoint]
 export http.Header, http.HttpResponse, http.header
 export ioring.Deadline, ioring.never, ioring.afterMs
+
+const
+  MinRead = 1024
+  MaxRead = 16 * 1024
+    ## Buffered reads start small and double while the peer fills them, as in
+    ## std/streamio: an idle keep-alive client keeps a small input buffer.
+  DirectRead = 16 * 1024
+    ## With nothing buffered, a body read at least this large goes from the
+    ## socket straight into the caller's storage, skipping the input buffer.
+  SmallBody = 16 * 1024
+    ## Request bodies up to this size share one write with the head.
 
 type
   HttpOptions* = object
@@ -23,11 +33,11 @@ type
     phase: BodyPhase
     deadline: Deadline
     keepAlive: bool
-    remaining: int
-    received: int
+    remaining: int ## Bytes left in a Content-Length body or the current chunk.
+    received: int ## Declared chunk bytes, or EOF-body bytes, counted against maxBody.
     input: string
-    pos: int
-    readBuffer: array[8192, char]
+    pos: int ## Unread input starts here; consumed bytes are dropped before reads.
+    step: int
 
 proc initHttpOptions*(maxBody: Positive = 64 * 1024 * 1024): HttpOptions =
   ## Default to a 64 MiB response limit. Streaming does not allocate the whole body.
@@ -52,7 +62,7 @@ proc prepareHead(authority, meth, target: string; length: int;
                  headers: seq[Header]; head: var string) {.raises.} =
   head = requestHead(authority, meth, target, length, headers)
 
-proc decodeHead(head, meth: string; parsed: var ResponseHead) {.raises.} =
+proc decodeHead(head: openArray[char]; meth: string; parsed: var ResponseHead) {.raises.} =
   parsed = parseResponseHead(head, meth)
 
 proc connectHttp*(url: string; dl: Deadline; options = initHttpOptions()): HttpClient
@@ -63,36 +73,41 @@ proc connectHttp*(url: string; dl: Deadline; options = initHttpOptions()): HttpC
   prepareEndpoint(url, ep)
   if options.maxBody <= 0 or '\0' in options.caFile: raise ValueError
   checkDeadline(dl)
-  result = HttpClient(authority: ep.authority, target: ep.target, maxBody: options.maxBody)
+  result = HttpClient(authority: ep.authority, target: ep.target,
+                      maxBody: options.maxBody, step: MinRead)
   try:
     open(result.transport, ep.host, ep.port, ep.secure, options.caFile, dl)
-    checkDeadline(dl)
     result.phase = hpReady
   except ErrorCode as e:
     close(result)
     raise e
 
+proc buffered(c: HttpClient): int {.inline.} = c.input.len - c.pos
+
 proc fill(c: HttpClient; dl: Deadline): int {.passive, raises.} =
+  ## Append one read to the unread input, compacting consumed bytes first.
   if c.pos > 0:
     dropPrefix(c.input, c.pos)
     c.pos = 0
-  result = readSome(c.transport, c.readBuffer, dl)
-  appendBytes(c.input, toOpenArray(c.readBuffer, 0, result - 1))
+  result = readInto(c.transport, c.input, c.step, dl)
+  if result >= c.step: c.step = min(c.step * 2, MaxRead)
+  elif result > 0: c.step = MinRead
+
+proc needMore(c: HttpClient; dl: Deadline) {.passive, raises.} =
+  if fill(c, dl) == 0: raise EndOfStreamError
 
 proc readHead(c: HttpClient; meth: string; dl: Deadline): ResponseHead {.passive, raises.} =
+  ## Parse the head in place once findHeadEnd has seen its blank line.
   result = ResponseHead()
   var scan = HeadScanner()
   while true:
-    checkDeadline(dl)
-    let n = findHeadEnd(scan,
-      toOpenArray(readRawData(c.input, c.pos), 0, c.input.len - c.pos - 1))
-    if n == ParseBad or n > MaxHeadLen: raise ContentTooLong
+    let n = findHeadEnd(scan, toOpenArray(c.input, c.pos, c.input.len - 1))
+    if n == ParseBad: raise ContentTooLong
     if n >= 0:
-      decodeHead(c.input[c.pos..<c.pos + n], meth, result)
-      checkDeadline(dl)
+      decodeHead(toOpenArray(c.input, c.pos, c.pos + n - 1), meth, result)
       c.pos += n
       return
-    if fill(c, dl) == 0: raise EndOfStreamError
+    needMore(c, dl)
 
 proc finishBody(c: HttpClient) =
   if c.keepAlive: c.phase = hpReady
@@ -109,14 +124,14 @@ proc request*(c: HttpClient; dl: Deadline; meth = "GET"; target = "";
   var head = ""
   prepareHead(c.authority, meth,
     (if target.len == 0: c.target else: target), body.len, headers, head)
+  if body.len <= SmallBody: head.add body
   c.deadline = dl
   c.received = 0
   try:
     checkDeadline(dl)
-    writeAll(c.transport, toOpenArray(readRawDataStable(head), 0, head.len - 1), dl)
-    if body.len > 0:
-      var payload = body
-      writeAll(c.transport, toOpenArray(readRawDataStable(payload), 0, payload.len - 1), dl)
+    writeAll(c.transport, toOpenArray(head, 0, head.len - 1), dl)
+    if body.len > SmallBody:
+      writeAll(c.transport, toOpenArray(body, 0, body.len - 1), dl)
     var parsed = readHead(c, meth, dl)
     while parsed.response.status < 200:
       parsed = readHead(c, meth, dl)
@@ -135,34 +150,73 @@ proc request*(c: HttpClient; dl: Deadline; meth = "GET"; target = "";
     close(c)
     raise e
 
-proc readLine(c: HttpClient; limit: int; dl: Deadline): string {.passive, raises.} =
-  var scanned = 0
-  while true:
-    checkDeadline(dl)
-    let available = c.input.len - c.pos
-    while scanned < available:
-      if c.input[c.pos + scanned] == '\n':
-        if scanned == 0 or c.input[c.pos + scanned - 1] != '\r': raise SyntaxError
-        if scanned + 1 > limit: raise ContentTooLong
-        result = c.input[c.pos..<c.pos + scanned + 1]
-        c.pos += scanned + 1
-        return
-      inc scanned
-    if available >= limit: raise ContentTooLong
-    if fill(c, dl) == 0: raise EndOfStreamError
-
-proc readTrailers(c: HttpClient; dl: Deadline) {.passive, raises.} =
-  var count = 0
+proc skipTrailers(c: HttpClient; dl: Deadline) {.passive, raises.} =
+  ## Consume the trailer section and its blank line. Trailers are discarded
+  ## (RFC 9112 §7.1.2), so only their count and size are bounded; each byte is
+  ## examined once, even when the peer sends one byte at a time.
+  var lines = 0
   var bytes = 0
+  var inLine = false
   while true:
-    let line = readLine(c, MaxHeadLen - bytes, dl)
-    bytes += line.len
-    if line == "\r\n": return
-    inc count
-    if count > MaxTrailerCount: raise ContentTooLong
-    let colon = line.find(':')
-    if colon <= 0 or not validToken(line[0..<colon]) or
-        not cleanValue(line[colon + 1..<line.len - 2]): raise SyntaxError
+    if inLine:
+      let stop = c.input.len
+      var i = c.pos
+      while i < stop and c.input[i] != '\n': inc i
+      inLine = i == stop
+      if not inLine: inc i
+      bytes += i - c.pos
+      c.pos = i
+      if bytes > MaxHeadLen: raise ContentTooLong
+      if inLine: needMore(c, dl)
+    else:
+      let blank = parseCrLf(toOpenArray(c.input, c.pos, c.input.len - 1))
+      if blank >= 0:
+        c.pos += blank
+        return
+      if blank == ParseIncomplete:
+        needMore(c, dl)
+      else:
+        inc lines
+        if lines > MaxTrailerCount: raise ContentTooLong
+        inLine = true
+
+proc consumed(c: HttpClient; n: int) {.raises.} =
+  ## Account for n delivered body bytes. Declared lengths and chunk sizes were
+  ## checked against maxBody when announced; only EOF bodies are checked here.
+  if c.phase == hpEof:
+    if n > c.maxBody - c.received: raise ContentTooLong
+    c.received += n
+  else:
+    c.remaining -= n
+    if c.remaining == 0:
+      if c.phase == hpLength: finishBody(c)
+      else: c.phase = hpChunkEnd
+
+proc endOfStream(c: HttpClient) {.raises.} =
+  ## EOF completes only an EOF-delimited body.
+  if c.phase != hpEof: raise EndOfStreamError
+  close(c)
+
+proc copyBody(c: HttpClient; dest: var openArray[char]; dl: Deadline): int
+    {.passive, raises.} =
+  ## Length, chunk-data or EOF bytes: buffered input first, then large reads
+  ## straight into dest, otherwise one buffered read.
+  var limit = dest.len
+  if c.phase != hpEof: limit = min(limit, c.remaining)
+  result = 0
+  if buffered(c) == 0:
+    if limit >= DirectRead:
+      result = readSome(c.transport, toOpenArray(dest, 0, limit - 1), dl)
+      if result == 0: endOfStream(c)
+      else: consumed(c, result)
+      return
+    if fill(c, dl) == 0:
+      endOfStream(c)
+      return
+  result = min(limit, buffered(c))
+  copyMem(addr dest[0], readRawData(c.input, c.pos), result)
+  c.pos += result
+  consumed(c, result)
 
 proc readBody*(c: HttpClient; dest: var openArray[char]; dl = never): int
     {.passive, raises.} =
@@ -170,55 +224,57 @@ proc readBody*(c: HttpClient; dest: var openArray[char]; dl = never): int
   ## zero means the body ended. dl can tighten the request deadline, never widen it.
   ## Chunk framing and trailers are consumed automatically; content coding is raw.
   result = 0
-  if dest.len == 0 or c.phase in [hpReady, hpClosed]: return
+  if dest.len == 0 or c.phase in {hpReady, hpClosed}: return
   let deadline = earlier(c.deadline, dl)
   try:
+    checkDeadline(deadline)
     while true:
-      checkDeadline(deadline)
       case c.phase
       of hpClosed, hpReady: return
       of hpChunkHead:
-        let line = readLine(c, MaxChunkSizeDigits + MaxChunkExtLen + 2, deadline)
         var n = 0
-        if parseChunkSize(line, n) < 0: raise SyntaxError
-        if n > c.maxBody - c.received: raise ContentTooLong
-        if n == 0:
-          readTrailers(c, deadline)
-          finishBody(c)
-          return
-        c.remaining = n
-        c.phase = hpChunkData
-      of hpChunkEnd:
-        if readLine(c, 2, deadline) != "\r\n": raise SyntaxError
-        c.phase = hpChunkHead
-      of hpLength, hpChunkData, hpEof:
-        if c.pos == c.input.len:
-          if fill(c, deadline) == 0:
-            if c.phase != hpEof: raise EndOfStreamError
-            close(c)
+        let used = parseChunkSize(toOpenArray(c.input, c.pos, c.input.len - 1), n)
+        if used == ParseBad: raise SyntaxError
+        if used == ParseIncomplete:
+          needMore(c, deadline)
+        else:
+          c.pos += used
+          if n > c.maxBody - c.received: raise ContentTooLong
+          if n == 0:
+            skipTrailers(c, deadline)
+            finishBody(c)
             return
-        var n = min(dest.len, c.input.len - c.pos)
-        if c.phase != hpEof: n = min(n, c.remaining)
-        if n > c.maxBody - c.received: raise ContentTooLong
-        copyMem(addr dest[0], readRawData(c.input, c.pos), n)
-        c.pos += n
-        c.received += n
-        if c.phase != hpEof:
-          c.remaining -= n
-          if c.remaining == 0:
-            if c.phase == hpLength: finishBody(c)
-            else: c.phase = hpChunkEnd
-        return n
+          c.received += n
+          c.remaining = n
+          c.phase = hpChunkData
+      of hpChunkEnd:
+        let used = parseCrLf(toOpenArray(c.input, c.pos, c.input.len - 1))
+        if used == ParseBad: raise SyntaxError
+        if used == ParseIncomplete:
+          needMore(c, deadline)
+        else:
+          c.pos += used
+          c.phase = hpChunkHead
+      of hpLength, hpChunkData, hpEof:
+        return copyBody(c, dest, deadline)
   except ErrorCode as e:
     close(c)
     raise e
 
 proc readAll*(c: HttpClient; dl = never): string {.passive, raises.} =
   ## Collect the current body within maxBody and the original request deadline.
+  ## A Content-Length body is allocated once and read straight into the result.
   ## Use readBody for large bodies that should stay out of memory.
   result = ""
-  var bytes = default(array[8192, char])
-  while true:
-    let n = readBody(c, bytes, dl)
+  while c.phase notin {hpReady, hpClosed}:
+    let step = if c.phase in {hpLength, hpChunkData}: max(c.remaining, MinRead)
+               else: MaxRead
+    let old = result.len
+    var n = 0
+    var spare = toOpenArray(beginStore(result, old + step, old), 0, step - 1)
+    try:
+      n = readBody(c, spare, dl)
+    finally:
+      endStore(result)
+      result.setLen(old + n)
     if n == 0: return
-    appendBytes(result, toOpenArray(bytes, 0, n - 1))

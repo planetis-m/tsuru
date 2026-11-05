@@ -15,10 +15,10 @@ proc exercise(url, mode, caFile: string) {.passive, raises.} =
   defer: c.close()
   var expected = Success
   if mode in ["slow-head", "slow-body", "expired-request"]: expected = TimeoutError
-  elif mode in ["malformed", "bad-chunk", "bad-trailer"]: expected = SyntaxError
+  elif mode in ["malformed", "bad-chunk", "bad-chunk-end"]: expected = SyntaxError
   elif mode == "truncated":
     expected = if url.startsWith("https://"): IOError else: EndOfStreamError
-  elif mode in ["too-large", "chunk-limit", "eof-limit", "huge-head"]: expected = ContentTooLong
+  elif mode in ["too-large", "chunk-limit", "eof-limit", "huge-head", "trailer-limit"]: expected = ContentTooLong
   elif mode == "upgrade": expected = UnimplementedOperation
   var caught = Success
   try:
@@ -32,6 +32,22 @@ proc exercise(url, mode, caFile: string) {.passive, raises.} =
       let response = c.request(deadline, meth = "POST", body = data)
       doAssert response.status == 200
       doAssert c.readAll() == data
+    elif mode == "chunked-large":
+      # Chunk data larger than the buffered read goes straight into the result,
+      # never past the chunk; a 64 KiB readBody does the same for a fixed body.
+      doAssert c.request(afterMs(2000)).status == 200
+      let data = c.readAll()
+      doAssert data.len == 200001 and c.open
+      for i in 0..<data.len: doAssert data[i] == char(i mod 253)
+      doAssert c.request(afterMs(2000)).status == 200
+      var chunk = newString(65536)
+      var total = 0
+      while true:
+        let n = c.readBody(toOpenArray(chunk, 0, chunk.len - 1))
+        if n == 0: break
+        for i in 0..<n: doAssert chunk[i] == char((total + i) mod 253)
+        total += n
+      doAssert total == 70000 and c.open
     elif mode == "no-body":
       for meth in ["HEAD", "GET", "GET"]:
         let response = c.request(afterMs(2000), meth = meth)
