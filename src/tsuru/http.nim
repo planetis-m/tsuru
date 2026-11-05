@@ -1,7 +1,8 @@
 ## HTTP/1.x heads and request serialization, independent of I/O.
 import std/strutils
-from std/http/httpparse import parseToken, MaxHeadLen, MaxHeaderCount
-import tsuru/internal/head
+from std/http/httpparse import MaxHeadLen, MaxHeaderCount
+import tsuru/internal/[head, buffer]
+export head.hasToken
 
 type
   Header* = object
@@ -20,20 +21,10 @@ type
 const ReservedRequestHeaders = ["host", "content-length", "transfer-encoding",
   "connection", "upgrade", "expect"]
 
-proc validToken*(s: string): bool =
-  s.len > 0 and parseToken(toOpenArray(s, 0, s.len - 1)) == s.len
-
-proc cleanValue*(s: string): bool =
-  s.find({'\0'..'\x1f', '\x7f'} - {'\t'}) == -1
-
-proc hasToken*(value: openArray[char]; token: string): bool =
-  ## Whether a comma-separated field value lists token, ignoring ASCII case.
-  head.hasToken(value, token)
-
 proc header*(response: HttpResponse; name: string; default = ""): string =
   ## First matching value, or default. Iterate headers to retain duplicate values.
   for h in response.headers:
-    if h.name.cmpIgnoreCase(name) == 0: return h.value
+    if sameIgnoreCase(h.name, name): return h.value
   result = default
 
 proc contentLength(s: openArray[char]; n: var int): bool =
@@ -109,7 +100,7 @@ proc parseResponseHead*(head: openArray[char]; meth: string): ResponseHead {.rai
 proc reservedRequestHeader(name: string): bool =
   result = false
   for reserved in ReservedRequestHeaders:
-    if name.cmpIgnoreCase(reserved) == 0: return true
+    if equalsLower(name, reserved): return true
 
 proc requestHead*(authority, meth, target: string; length: int;
                   headers: seq[Header]): string {.raises.} =
@@ -126,7 +117,7 @@ proc requestHead*(authority, meth, target: string; length: int;
   for h in headers:
     if not validToken(h.name) or not cleanValue(h.value) or reservedRequestHeader(h.name):
       raise ValueError
-    if h.name.cmpIgnoreCase("accept-encoding") == 0: encoding = true
+    if equalsLower(h.name, "accept-encoding"): encoding = true
     size += h.name.len + h.value.len + 4
   result = newStringOfCap(size)
   result.add meth

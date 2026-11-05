@@ -18,6 +18,16 @@ const
 proc toLower(c: char): char {.inline.} =
   if c in {'A'..'Z'}: char(ord(c) + 32) else: c
 
+proc validToken*(s: openArray[char]): bool =
+  ## A nonempty RFC 9110 token, such as a field name or method.
+  s.len > 0 and parseToken(s) == s.len
+
+proc cleanValue*(s: openArray[char]): bool =
+  ## Whether s may be sent as a field value: no controls other than HTAB.
+  result = true
+  for c in s:
+    if c in BadValueChars: return false
+
 proc parseStatusLine*(buf: openArray[char]; status, minor: var int): int =
   ## `HTTP/1.0` or `HTTP/1.1`, SP, a status in 100..599, optional reason, line end.
   ## The reason phrase is checked for controls while finding the line end and
@@ -91,12 +101,6 @@ proc hasToken*(value: openArray[char]; token: string): bool =
     while stop > start and value[stop - 1] in {' ', '\t'}: dec stop
     if stop > start and sameIgnoreCase(toOpenArray(value, start, stop - 1), token):
       return true
-
-proc copyBytes*(s: openArray[char]): string =
-  result = ""
-  if s.len > 0:
-    copyMem(beginStore(result, s.len), addr s[0], s.len)
-    endStore(result)
 
 proc copyLower*(s: openArray[char]): string =
   result = ""

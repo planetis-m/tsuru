@@ -1,9 +1,9 @@
 ## WebSocket opening request construction and HTTP upgrade validation.
 import std/[strutils, sha1, base64]
 from std/http/httpparse import MaxHeadLen
-from tsuru/http import Header, validToken, cleanValue
-import tsuru/internal/[endpoint, head]
-export Header, endpoint.Endpoint
+from tsuru/http import Header
+import tsuru/internal/[endpoint, head, buffer]
+export Header
 from tsuru/frame import DefaultMaxMessage
 
 const MaxHandshake* = MaxHeadLen
@@ -45,7 +45,7 @@ proc reservedHandshakeHeader(name: string): bool =
     return true
   result = false
   for reserved in ReservedHandshakeHeaders:
-    if name.cmpIgnoreCase(reserved) == 0: return true
+    if equalsLower(name, reserved): return true
 
 proc validateOptions*(options: WebSocketOptions) {.raises.} =
   ## Reject invalid limits and fields that could alter the upgrade request.

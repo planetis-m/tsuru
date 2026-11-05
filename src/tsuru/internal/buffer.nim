@@ -8,6 +8,11 @@ proc appendBytes*[T: char | byte](s: var string; data: openArray[T]) =
   copyMem(beginStore(s, oldLen + data.len, oldLen), addr data[0], data.len)
   endStore(s)
 
+proc copyBytes*(s: openArray[char]): string =
+  ## An owned copy of a borrowed view.
+  result = ""
+  appendBytes(result, s)
+
 proc dropPrefix*(s: var string; n: int) =
   ## Discard n consumed bytes in place, where 0 <= n <= s.len. Retain capacity.
   if n == 0:

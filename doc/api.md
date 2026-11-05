@@ -185,9 +185,8 @@ unsupported.
 | `tsuru/protocol` | Streamed message assembly, UTF-8 and close handling |
 | `tsuru/handshake` | Endpoint parsing, opening request construction and upgrade validation |
 
-`tsuru/handshake` exports `Endpoint`. `parseEndpoint` returns its host,
-authority, encoded target, port and TLS selection. `buildRequest` takes that
-value and a base64 nonce.
+`parseEndpoint` returns a value with the host, authority, encoded target, port
+and TLS selection fields. `buildRequest` takes that value and a base64 nonce.
 
 `parseFrame` requires `0 <= start <= data.len` and a nonnegative payload limit.
 `parseFrameHeader` validates a header without needing its payload.

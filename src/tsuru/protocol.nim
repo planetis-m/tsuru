@@ -1,5 +1,6 @@
 ## WebSocket message assembly, UTF-8 and close handling, independent of I/O.
 import ./frame
+import ./internal/buffer
 
 type
   ActionKind* = enum
@@ -74,12 +75,6 @@ proc closeBody*(code: int; reason = ""): string =
 proc failure(code: int): Action =
   Action(kind: akError, code: code)
 
-proc copyPayload(s: openArray[char]): string =
-  result = ""
-  if s.len > 0:
-    copyMem(beginStore(result, s.len), addr s[0], s.len)
-    endStore(result)
-
 proc handleClose*(payload: openArray[char]): Action =
   ## Decode a peer Close: code and UTF-8 reason (RFC 6455 §5.5.1, §7.4).
   let n = payload.len
@@ -92,12 +87,12 @@ proc handleClose*(payload: openArray[char]): Action =
     return failure(1002)
   if not validUtf8(toOpenArray(payload, 2, n - 1)):
     return failure(1007)
-  result = Action(kind: akClose, code: code, data: copyPayload(toOpenArray(payload, 2, n - 1)))
+  result = Action(kind: akClose, code: code, data: copyBytes(toOpenArray(payload, 2, n - 1)))
 
 proc handleControl*(op: Opcode; payload: openArray[char]): Action =
   ## Ping, pong or close; op must be a control opcode.
   case op
-  of opPing: result = Action(kind: akPong, data: copyPayload(payload))
+  of opPing: result = Action(kind: akPong, data: copyBytes(payload))
   of opClose: result = handleClose(payload)
   else: result = Action(kind: akNone)
 
