@@ -91,10 +91,6 @@ proc transportFailed(ws: WebSocket; error: ErrorCode) =
 proc budget(ws: WebSocket; dl: Deadline): Deadline =
   earlier(afterMs(ws.timeoutMs), dl)
 
-proc fill(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
-  ## One buffered read; false at end of stream.
-  fill(ws.input, ws.transport, dl) > 0
-
 proc flush(ws: WebSocket; dl: Deadline) {.passive, raises.} =
   if ws.sent < ws.sendBuffer.len:
     writeAll(ws.transport,
@@ -138,7 +134,7 @@ proc connectWebSocket*(url: string; dl = never; options = initWebSocketOptions()
     var scan = HeadScanner()
     var headLen = -1
     while headLen < 0:
-      if not fill(result, deadline): raise EndOfStreamError
+      if fill(result.input, result.transport, deadline) == 0: raise EndOfStreamError
       headLen = findHeadEnd(scan, result.input.data)
       if headLen == ParseBad: raise ContentTooLong
     result.selectedProtocol = validateResponse(
@@ -199,7 +195,7 @@ proc readMore(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
     appended(ws.message, n)
     result = n > 0
   else:
-    result = fill(ws, dl)
+    result = fill(ws.input, ws.transport, dl) > 0
 
 proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
   ## Receive Some(complete message or terminal wmClose), or None on deadline expiry.
