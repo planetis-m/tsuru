@@ -9,7 +9,7 @@ See [runtime](runtime.md) for scheduling, TLS and connection ownership.
 
 | Operation | Result |
 | --- | --- |
-| `connectWebSocket(url, options = initWebSocketOptions(), dl = never)` | Connected `WebSocket`; raises on setup failure |
+| `connectWebSocket(url, dl = never, options = initWebSocketOptions())` | Connected `WebSocket`; raises on setup failure |
 | `ws.send(data: string, binary = false, dl = never)` | Write success as `bool`; text by default |
 | `ws.send(data: seq[byte], dl = never)` | Binary write success as `bool` |
 | `ws.recv(dl = never)` | `Opt[Message]`: complete message, terminal close, or expiry |
@@ -17,7 +17,6 @@ See [runtime](runtime.md) for scheduling, TLS and connection ownership.
 | `ws.close(code = 1000, reason = "", dl = never)` | Terminal `Message` after a bounded closing handshake |
 | `ws.abort()` | Immediate, idempotent release |
 | `ws.open` | Whether application messages may be sent, as `bool` |
-| `ws.state` | `wsOpen` or `wsClosed` |
 | `ws.protocol` | Negotiated subprotocol, or `""` |
 
 Connect, send, receive, ping and close may suspend. Abort and the status

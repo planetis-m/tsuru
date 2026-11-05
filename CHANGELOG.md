@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### API cleanup
+
+- `connectWebSocket(url, dl = never, options = initWebSocketOptions())` takes
+  its parameters in the same order as `connectHttp(url, dl, options)`. The
+  previous `connectWebSocket(url, options, dl = never)` remains as a deprecated
+  overload.
+- `WebSocket.state` is deprecated; use `open`, which has always given the same
+  answer outside `close`.
+- `tsuru/handshake` no longer re-exports the internal `Endpoint` type;
+  `parseEndpoint` results and their fields work as before.
+- `tsuru/http` no longer exports the undocumented `validToken` and
+  `cleanValue` helpers. `hasToken` is unchanged.
+
 ### Performance
 
 Patterns taken from Nimony's `std/streamio`, `std/http/httpparse` and

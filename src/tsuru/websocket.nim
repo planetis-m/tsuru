@@ -42,23 +42,23 @@ type
     transport: Transport
     maxMessage: int
     timeoutMs: int
-    status: ConnectionPhase
+    phase: ConnectionPhase
     selectedProtocol: string
     input: Input
     frameLeft: int ## Payload bytes of the current data frame not yet assembled.
     frameFin: bool
     sendBuffer: string
     sent: int ## Bytes written from sendBuffer; a paused pong preserves both across recv expiry.
-    fragments: MessageState
+    message: MessageState ## The message under assembly.
     closure: CloseInfo
 
-proc state*(ws: WebSocket): WebSocketState {.inline.} =
-  ## Current state of the connection; does not suspend.
-  if ws.status == connClosed: wsClosed else: wsOpen
+proc state*(ws: WebSocket): WebSocketState {.inline, deprecated: "use open".} =
+  ## Current state of the connection; does not suspend. Equivalent to open.
+  if ws.phase == connClosed: wsClosed else: wsOpen
 
 proc open*(ws: WebSocket): bool {.inline.} =
   ## Whether application messages may be sent; does not suspend.
-  ws.status == connOpen
+  ws.phase == connOpen
 
 proc protocol*(ws: WebSocket): string {.inline.} =
   ## Negotiated subprotocol, or empty if none was selected; does not suspend.
@@ -66,12 +66,12 @@ proc protocol*(ws: WebSocket): string {.inline.} =
 
 proc release(ws: WebSocket) =
   close(ws.transport)
-  ws.status = connClosed
+  ws.phase = connClosed
   clear(ws.input)
   ws.frameLeft = 0
   ws.sendBuffer = ""
   ws.sent = 0
-  ws.fragments = MessageState()
+  ws.message = MessageState()
 
 proc terminate(ws: WebSocket; source: CloseSource; code = AbnormalClosure; reason = "") =
   ws.closure = CloseInfo(code: code, reason: reason, source: source)
@@ -84,7 +84,7 @@ proc closedMessage(ws: WebSocket): Message =
 
 proc abort*(ws: WebSocket) =
   ## Release immediately without a close handshake. Preserve an existing close result.
-  if ws.status != connClosed: terminate(ws, csLocal)
+  if ws.phase != connClosed: terminate(ws, csLocal)
 
 proc transportFailed(ws: WebSocket; error: ErrorCode) =
   if ws.closure.code == 0:
@@ -122,10 +122,11 @@ proc emit[T: char | byte](ws: WebSocket; op: Opcode; data: openArray[T]; dl: Dea
     transportFailed(ws, e)
     result = false
 
-proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never): WebSocket
+proc connectWebSocket*(url: string; dl = never; options = initWebSocketOptions()): WebSocket
     {.passive, raises.} =
-  ## Complete TCP, optional TLS and HTTP upgrade within a single operation budget.
-  ## TLS requires -d:tsuruTls; unsupported wss raises UnimplementedOperation.
+  ## Complete TCP, optional TLS and HTTP upgrade within the options' operation
+  ## budget, tightened by dl. TLS requires -d:tsuruTls; unsupported wss raises
+  ## UnimplementedOperation.
   let deadline = earlier(afterMs(options.timeoutMs), dl)
   let endpoint = parseEndpoint(url)
   let key = encode(randomBytes(16))
@@ -146,28 +147,33 @@ proc connectWebSocket*(url: string; options = initWebSocketOptions(); dl = never
     result.selectedProtocol = validateResponse(
       toOpenArray(result.input.data, 0, headLen - 1), key, options.protocols)
     result.input.pos = headLen
-    result.status = connOpen
+    result.phase = connOpen
   except ErrorCode as e:
     terminate(result, csTransportError)
     raise e
 
+proc connectWebSocket*(url: string; options: WebSocketOptions; dl = never): WebSocket
+    {.passive, raises, deprecated: "use connectWebSocket(url, dl, options)".} =
+  ## The previous parameter order.
+  connectWebSocket(url, dl, options)
+
 proc send*(ws: WebSocket; data: string; binary = false; dl = never): bool {.passive.} =
   ## Send one masked message. The caller supplies valid UTF-8 for text messages.
   ## Return false unless open, or on a failed write; failures release it.
-  if ws.status != connOpen: return false
+  if ws.phase != connOpen: return false
   result = emit(ws, (if binary: opBinary else: opText), toOpenArray(data, 0, data.len - 1),
                 budget(ws, dl))
 
 proc send*(ws: WebSocket; data: seq[byte]; dl = never): bool {.passive.} =
   ## Send one binary message without converting bytes to a string.
   ## Return false unless open, or on a failed write; failures release it.
-  if ws.status != connOpen: return false
+  if ws.phase != connOpen: return false
   result = emit(ws, opBinary, toOpenArray(data, 0, data.len - 1), budget(ws, dl))
 
 proc ping*(ws: WebSocket; data = ""; dl = never): bool {.passive.} =
   ## Send a ping of at most 125 bytes. recv consumes pong replies.
   ## Return false unless open, or on a failed write; failures release it.
-  if ws.status != connOpen: return false
+  if ws.phase != connOpen: return false
   result = emit(ws, opPing, toOpenArray(data, 0, data.len - 1), budget(ws, dl))
 
 proc closeWith(ws: WebSocket; code: int; reason: string; source: CloseSource;
@@ -175,7 +181,7 @@ proc closeWith(ws: WebSocket; code: int; reason: string; source: CloseSource;
   ## Record the outcome, answer with a Close frame unless one was already sent,
   ## then release.
   ws.closure = CloseInfo(code: code, reason: reason, source: source)
-  if ws.status == connClosing or emit(ws, opClose, toOpenArray(payload, 0, payload.len - 1), dl):
+  if ws.phase == connClosing or emit(ws, opClose, toOpenArray(payload, 0, payload.len - 1), dl):
     release(ws)
   result = closedMessage(ws)
 
@@ -188,14 +194,14 @@ proc eof(ws: WebSocket): Message =
 
 proc deliver(ws: WebSocket; dl: Deadline): Message {.passive.} =
   ## Finish the message after its final frame.
-  let action = finishMessage(ws.fragments)
+  let action = finishMessage(ws.message)
   if action.kind == akError: return failProtocol(ws, action.code, dl)
   result = Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
 
 proc assembleBuffered(ws: WebSocket) =
   ## Append the buffered part of the current data frame to the message.
   let n = min(buffered(ws.input), ws.frameLeft)
-  appendBytes(ws.fragments.payload,
+  appendBytes(ws.message.payload,
     toOpenArray(ws.input.data, ws.input.pos, ws.input.pos + n - 1))
   ws.input.pos += n
   ws.frameLeft -= n
@@ -204,7 +210,7 @@ proc readPayload(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
   ## With nothing buffered, read a large payload remainder straight into the
   ## message, otherwise refill the input. False at EOF.
   if ws.frameLeft >= DirectRead:
-    let n = readInto(ws.transport, ws.fragments.payload, ws.frameLeft, dl)
+    let n = readInto(ws.transport, ws.message.payload, ws.frameLeft, dl)
     ws.frameLeft -= n
     result = n > 0
   else:
@@ -215,7 +221,7 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
   ## One deadline spans fragments and pings. Expiry preserves the live connection,
   ## partial input and pending control output for the next operation.
   ## Peer close, EOF, protocol failure and I/O failure all release the socket.
-  if ws.status == connClosed: return some(closedMessage(ws))
+  if ws.phase == connClosed: return some(closedMessage(ws))
   let deadline = budget(ws, dl)
   try:
     checkDeadline(deadline)
@@ -257,7 +263,7 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
           of akError: return some(failProtocol(ws, action.code, deadline))
           of akNone, akMessage: discard
         else:
-          let code = startData(ws.fragments, h, ws.maxMessage)
+          let code = startData(ws.message, h, ws.maxMessage)
           if code != 0: return some(failProtocol(ws, code, deadline))
           ws.input.pos += parsed.consumed
           ws.frameLeft = h.length
@@ -275,13 +281,13 @@ proc close*(ws: WebSocket; code = 1000; reason = ""; dl = never): Message {.pass
   ## Always release and return the terminal outcome; csPeer means a peer Close arrived.
   ## Return the recorded outcome if already closed.
   ## abort releases immediately without a handshake.
-  if ws.status == connClosed: return closedMessage(ws)
+  if ws.phase == connClosed: return closedMessage(ws)
   let deadline = earlier(afterMs(min(ws.timeoutMs, CloseWaitMs)), dl)
-  if ws.status == connOpen:
+  if ws.phase == connOpen:
     let body = closeBody(code, reason)
     if not emit(ws, opClose, toOpenArray(body, 0, body.len - 1), deadline):
       return closedMessage(ws)
-    ws.status = connClosing
+    ws.phase = connClosing
   while true:
     case recv(ws, deadline)
     of Some(message):
