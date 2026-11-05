@@ -14,6 +14,12 @@
   `parseEndpoint` results and their fields work as before.
 - `tsuru/http` no longer exports the undocumented `validToken` and
   `cleanValue` helpers. `hasToken` is unchanged.
+- The WebSocket receive step moved out of the I/O module into
+  `protocol.feed`, with `payloadLeft` and `appended` for payload read straight
+  into the message, and the new `akIncomplete` action kind. `MessageState`
+  now also holds the current frame's progress. The client and the seeded test
+  both use this path; `parseFrame` and `handleFrame`, which the client no
+  longer used, are deprecated.
 
 ### Performance
 
@@ -81,7 +87,8 @@ Source compatible. `parseResponseHead`, `hasToken`, `validateResponse` and
 
 New fixtures: `large-partial-timeout` (WebSocket, also over TLS),
 `chunked-large` and `bad-chunk-end` (HTTP); `bad-trailer` became
-`trailer-limit`. The seeded test grew to 200,000 inputs, with UTF-8 checked
-against `std/unicode` and mutated HTTP heads. `bench/` holds the benchmark.
+`trailer-limit`. The seeded test grew to 220,000 inputs, with UTF-8 checked
+against `std/unicode`, mutated HTTP heads, and the client's WebSocket receive
+step driven with random read sizes against a reference assembler. `bench/` holds the benchmark.
 Compatibility: qualified `setNoDelay`, which current Nimony's `std/ioring` also
 exports.

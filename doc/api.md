@@ -180,20 +180,24 @@ unsupported.
 
 | Import | Contents |
 | --- | --- |
-| `tsuru/frame` | Frame header parsing, frame parsing, headers and masking |
-| `tsuru/protocol` | Streamed message assembly, UTF-8 and close handling |
+| `tsuru/frame` | Frame header parsing, headers and masking |
+| `tsuru/protocol` | Receive progress, streamed message assembly, UTF-8 and close handling |
 | `tsuru/handshake` | Endpoint parsing, opening request construction and upgrade validation |
 
 `parseEndpoint` returns a value with the host, authority, encoded target, port
 and TLS selection fields. `buildRequest` takes that value and a base64 nonce.
 
-`parseFrame` requires `0 <= start <= data.len` and a nonnegative payload limit.
 `parseFrameHeader` validates a header without needing its payload.
-`handleFrame` takes a parsed frame and a nonnegative message limit; the
-client itself uses its parts: `startData` checks a data frame header against
-fragment order and the limit, payload bytes are appended to `payload`, and
-`finishMessage` validates text and moves the message out. Control frames go
-to `handleControl`.
+`feed` is the client's receive step, without I/O: given the unread input and a
+nonnegative message limit, it stores the buffered payload of the current data
+frame, accepts one frame header or handles one complete control frame, and
+reports the bytes it consumed. `akNone` asks for another call and
+`akIncomplete` for more input; a caller may instead append up to `payloadLeft`
+bytes straight to `payload` and report them with `appended`. Other action kinds
+are outcomes. Its parts are public too: `startData` checks a data frame header
+against fragment order and the limit, `finishMessage` validates text and moves
+the message out, and `handleControl` decodes control frames.
+`parseFrame` and `handleFrame` are deprecated; the client no longer uses them.
 `frameHeader` includes the four-byte mask key. `encodeFrame` returns an owned
 wire string; its `var string` overload reuses storage and accepts character or
 byte views. Input must not alias the output. Supply a fresh cryptographic mask

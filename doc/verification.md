@@ -30,10 +30,14 @@ Linux x86-64, Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 The wire fixtures use independent Python encoders and decoders. Unit tests
 cover pure codecs and HTTP heads. A facade test imports both clients together
 with `tsuru` and checks shared header and deadline identities plus overloaded
-operations. A seeded test supplies 200,000 deterministic inputs per run: random
+operations. A seeded test supplies 220,000 deterministic inputs per run: random
 bytes for the frame, UTF-8, URL, HTTP head and WebSocket upgrade parsers,
 mutated valid heads, and mostly-ASCII text whose UTF-8 verdict must match
-`std/unicode.validateUtf8` at every alignment.
+`std/unicode.validateUtf8` at every alignment. The client's receive step
+(`protocol.feed`) is driven with random bytes and with generated, mutated and
+truncated frame sequences, split into random read sizes with and without
+direct payload reads; its outcomes must match an independent reference
+assembler.
 Test assertions and peer-protocol checks remain active in danger builds.
 
 ## WebSocket coverage

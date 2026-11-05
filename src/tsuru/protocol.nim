@@ -1,21 +1,27 @@
-## WebSocket message assembly, UTF-8 and close handling, independent of I/O.
+## WebSocket receive progress, message assembly, UTF-8 and close handling,
+## independent of I/O.
 import ./frame
 import ./internal/buffer
 
 type
   ActionKind* = enum
-    akNone, akMessage, akPong, akClose, akError
+    akNone, akMessage, akPong, akClose, akError, akIncomplete
   Action* = object
     ## A complete message, control reply or local protocol failure for the I/O loop.
+    ## akNone means progress without an outcome; akIncomplete asks for more input.
     kind*: ActionKind
     data*: string ## Message bytes, pong bytes or peer close reason, according to kind.
     binary*: bool ## Message type for akMessage.
     code*: int ## Close status for akClose or local failure status for akError.
   MessageState* = object
-    ## Owns an unfinished message between frames: data frames append their
-    ## payload to it as it arrives, and the finished message is moved out.
+    ## Receive progress between reads: the current data frame and the message
+    ## under assembly. Data frames append their payload to it as it arrives, and
+    ## the finished message is moved out.
     fragmented: bool ## A started message still expects frames.
     binary: bool ## Meaningful only while a message is assembled.
+    inFrame: bool ## A data frame header was accepted and its payload is pending.
+    frameFin: bool ## The current data frame ends the message.
+    frameLeft: int ## Payload bytes of the current data frame not yet stored.
     data: string
 
 const AsciiMask = 0x8080_8080_8080_8080'u64
@@ -121,8 +127,58 @@ proc finishMessage*(s: var MessageState): Action =
   result = Action(kind: akMessage, binary: s.binary, data: move s.data)
   s.data = ""
 
+proc payloadLeft*(s: MessageState): int {.inline.} =
+  ## Payload bytes of the current data frame still expected; zero between frames.
+  s.frameLeft
+
+proc appended*(s: var MessageState; n: int) {.inline.} =
+  ## Account for n payload bytes the caller appended to payload directly,
+  ## where 0 <= n <= payloadLeft.
+  s.frameLeft -= n
+
+proc feed*(s: var MessageState; input: openArray[char]; maxMessage: int;
+           used: var int): Action =
+  ## Advance receive progress over the front of input and set used to the bytes
+  ## consumed. One call stores the buffered payload of the current data frame,
+  ## or accepts one frame header, or handles one complete control frame.
+  ## Call again after akNone; after akIncomplete supply more input, or append
+  ## up to payloadLeft bytes to payload and report them with appended.
+  ## Other kinds are outcomes; akError carries the close code that fails the
+  ## connection. maxMessage is nonnegative.
+  used = 0
+  if s.inFrame:
+    let n = min(input.len, s.frameLeft)
+    appendBytes(s.data, toOpenArray(input, 0, n - 1))
+    s.frameLeft -= n
+    used = n
+    if s.frameLeft > 0: return Action(kind: akIncomplete)
+    s.inFrame = false
+    if s.frameFin: return finishMessage(s)
+    return Action(kind: akNone)
+  var h = FrameHeader()
+  let parsed = parseFrameHeader(input, h, max(maxMessage, 125))
+  case parsed.status
+  of psIncomplete: result = Action(kind: akIncomplete)
+  of psError: result = failure(1002)
+  of psTooLarge: result = failure(1009)
+  of psOk:
+    if h.opcode.isControl:
+      let first = parsed.consumed
+      if h.length > input.len - first: return Action(kind: akIncomplete)
+      used = first + h.length
+      result = handleControl(h.opcode, toOpenArray(input, first, used - 1))
+    else:
+      let code = startData(s, h, maxMessage)
+      if code != 0: return failure(code)
+      used = parsed.consumed
+      s.inFrame = true
+      s.frameFin = h.fin
+      s.frameLeft = h.length
+      result = Action(kind: akNone)
+
 proc handleFrame*(s: var MessageState; f: Frame;
-                  maxMessage = DefaultMaxMessage): Action =
+                  maxMessage = DefaultMaxMessage): Action
+    {.deprecated: "the client uses feed".} =
   ## Assemble messages, validate text and closes, and handle interleaved control frames.
   ## Pass frames accepted by parseFrame; wire-level invariants belong to the parser.
   ## maxMessage is nonnegative.

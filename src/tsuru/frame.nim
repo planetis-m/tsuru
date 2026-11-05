@@ -138,7 +138,8 @@ proc parseFrameHeader*(data: openArray[char]; h: var FrameHeader;
   result = ParseResult(status: psOk, consumed: head)
 
 proc parseFrame*(data: string; start: int; frame: var Frame;
-                 maxPayload = DefaultMaxMessage): ParseResult =
+                 maxPayload = DefaultMaxMessage): ParseResult
+    {.deprecated: "use parseFrameHeader, or protocol.feed".} =
   ## Parse one complete unmasked server frame, copying its payload.
   ## The caller supplies 0 <= start <= data.len and a nonnegative maxPayload.
   var h = FrameHeader()

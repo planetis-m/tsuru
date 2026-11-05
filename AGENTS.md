@@ -21,7 +21,7 @@ inherit that instant and may tighten it, never renew it.
 | `tsuru` | Public facade re-exporting both clients |
 | `tsuru/websocket` | WebSocket connection state and passive operations |
 | `tsuru/frame` | Wire codec and masking |
-| `tsuru/protocol` | Message assembly, UTF-8 and close decisions |
+| `tsuru/protocol` | Receive progress, message assembly, UTF-8 and close decisions |
 | `tsuru/handshake` | Opening requests and HTTP upgrade validation |
 | `tsuru/http` | Pure HTTP heads and request serialization |
 | `tsuru/httpclient` | Request deadlines, keep-alive and body sequencing |

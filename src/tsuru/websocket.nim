@@ -10,7 +10,7 @@
 import std/[ioring, base64, opt]
 from std/http/httpparse import HeadScanner, findHeadEnd, ParseBad
 import tsuru/[frame, protocol, handshake]
-import tsuru/internal/[transport, entropy, buffer, input]
+import tsuru/internal/[transport, entropy, input]
 export handshake.Header, handshake.WebSocketOptions, handshake.initWebSocketOptions
 export ioring.Deadline, ioring.never, ioring.afterMs
 
@@ -45,11 +45,9 @@ type
     phase: ConnectionPhase
     selectedProtocol: string
     input: Input
-    frameLeft: int ## Payload bytes of the current data frame not yet assembled.
-    frameFin: bool
     sendBuffer: string
     sent: int ## Bytes written from sendBuffer; a paused pong preserves both across recv expiry.
-    message: MessageState ## The message under assembly.
+    message: MessageState ## Frame progress and the message under assembly.
     closure: CloseInfo
 
 proc state*(ws: WebSocket): WebSocketState {.inline, deprecated: "use open".} =
@@ -68,7 +66,6 @@ proc release(ws: WebSocket) =
   close(ws.transport)
   ws.phase = connClosed
   clear(ws.input)
-  ws.frameLeft = 0
   ws.sendBuffer = ""
   ws.sent = 0
   ws.message = MessageState()
@@ -192,26 +189,13 @@ proc eof(ws: WebSocket): Message =
   terminate(ws, csEof)
   closedMessage(ws)
 
-proc deliver(ws: WebSocket; dl: Deadline): Message {.passive.} =
-  ## Finish the message after its final frame.
-  let action = finishMessage(ws.message)
-  if action.kind == akError: return failProtocol(ws, action.code, dl)
-  result = Message(kind: (if action.binary: wmBinary else: wmText), data: action.data)
-
-proc assembleBuffered(ws: WebSocket) =
-  ## Append the buffered part of the current data frame to the message.
-  let n = min(buffered(ws.input), ws.frameLeft)
-  appendBytes(ws.message.payload,
-    toOpenArray(ws.input.data, ws.input.pos, ws.input.pos + n - 1))
-  ws.input.pos += n
-  ws.frameLeft -= n
-
-proc readPayload(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
+proc readMore(ws: WebSocket; dl: Deadline): bool {.passive, raises.} =
   ## With nothing buffered, read a large payload remainder straight into the
-  ## message, otherwise refill the input. False at EOF.
-  if ws.frameLeft >= DirectRead:
-    let n = readInto(ws.transport, ws.message.payload, ws.frameLeft, dl)
-    ws.frameLeft -= n
+  ## message, otherwise refill the input. False at end of stream.
+  let left = payloadLeft(ws.message)
+  if left >= DirectRead and buffered(ws.input) == 0:
+    let n = readInto(ws.transport, ws.message.payload, left, dl)
+    appended(ws.message, n)
     result = n > 0
   else:
     result = fill(ws, dl)
@@ -227,48 +211,24 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
     checkDeadline(deadline)
     while true:
       flush(ws, deadline)
-      if ws.frameLeft > 0:
-        if buffered(ws.input) > 0:
-          assembleBuffered(ws)
-        elif not readPayload(ws, deadline):
-          return some(eof(ws))
-        if ws.frameLeft == 0 and ws.frameFin: return some(deliver(ws, deadline))
-        continue
-      var h = FrameHeader()
-      let parsed = parseFrameHeader(unread(ws.input), h,
-                                    max(ws.maxMessage, 125))
-      case parsed.status
-      of psIncomplete:
-        if not fill(ws, deadline):
-          return some(eof(ws))
-      of psError: return some(failProtocol(ws, 1002, deadline))
-      of psTooLarge: return some(failProtocol(ws, 1009, deadline))
-      of psOk:
-        if h.opcode.isControl:
-          let first = ws.input.pos + parsed.consumed
-          if h.length > ws.input.data.len - first:
-            if not fill(ws, deadline):
-              return some(eof(ws))
-            continue
-          ws.input.pos = first + h.length
-          let action = handleControl(h.opcode,
-            toOpenArray(ws.input.data, first, first + h.length - 1))
-          case action.kind
-          of akPong:
-            prepareFrame(ws, opPong, toOpenArray(action.data, 0, action.data.len - 1))
-            flush(ws, deadline)
-          of akClose:
-            let payload = ws.input.data.substr(first, first + h.length - 1)
-            return some(closeWith(ws, action.code, action.data, csPeer, payload, deadline))
-          of akError: return some(failProtocol(ws, action.code, deadline))
-          of akNone, akMessage: discard
-        else:
-          let code = startData(ws.message, h, ws.maxMessage)
-          if code != 0: return some(failProtocol(ws, code, deadline))
-          ws.input.pos += parsed.consumed
-          ws.frameLeft = h.length
-          ws.frameFin = h.fin
-          if h.length == 0 and h.fin: return some(deliver(ws, deadline))
+      var used = 0
+      let action = feed(ws.message, unread(ws.input), ws.maxMessage, used)
+      ws.input.pos += used
+      case action.kind
+      of akNone: discard
+      of akIncomplete:
+        if not readMore(ws, deadline): return some(eof(ws))
+      of akMessage:
+        return some(Message(kind: (if action.binary: wmBinary else: wmText),
+                            data: action.data))
+      of akPong:
+        prepareFrame(ws, opPong, toOpenArray(action.data, 0, action.data.len - 1))
+        flush(ws, deadline)
+      of akClose:
+        # Echo the peer's code and reason; a Close without a code is echoed empty.
+        let payload = if action.code == 1005: "" else: closeBody(action.code, action.data)
+        return some(closeWith(ws, action.code, action.data, csPeer, payload, deadline))
+      of akError: return some(failProtocol(ws, action.code, deadline))
   except ErrorCode as e:
     if e == TimeoutError:
       result = none[Message]()
