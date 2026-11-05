@@ -14,7 +14,7 @@ proc exercise(url, mode, caFile: string) {.passive, raises.} =
   let c = connectHttp(url, afterMs(2000), options)
   defer: c.close()
   var expected = Success
-  if mode in ["slow-head", "slow-body", "expired-request"]: expected = TimeoutError
+  if mode in ["slow-head", "slow-body"]: expected = TimeoutError
   elif mode in ["malformed", "bad-chunk", "bad-chunk-end"]: expected = SyntaxError
   elif mode == "truncated":
     expected = if url.startsWith("https://"): IOError else: EndOfStreamError
@@ -26,7 +26,11 @@ proc exercise(url, mode, caFile: string) {.passive, raises.} =
     if mode == "abort":
       c.close()
     elif mode == "expired-request":
-      discard c.request(afterMs(-1))
+      var rejected = Success
+      try: discard c.request(afterMs(-1))
+      except ErrorCode as e: rejected = e
+      doAssert rejected == TimeoutError and c.open, "an expired deadline must keep an idle connection"
+      doAssert c.request(afterMs(2000)).status == 200 and c.readAll() == "hello"
     elif mode == "large":
       let data = repeat("x\0\xff", 7 * 1024 * 1024)
       let deadline = afterMs(10_000)
@@ -64,7 +68,7 @@ proc exercise(url, mode, caFile: string) {.passive, raises.} =
         var rejected = Success
         try: discard c.request(afterMs(2000))
         except ErrorCode as e: rejected = e
-        doAssert rejected == ValueError and c.open
+        doAssert rejected == BadOperation and c.open
       var body = ""
       var bytes = default(array[3, char])
       while true:

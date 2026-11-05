@@ -4,8 +4,7 @@
 import std/ioring
 from std/http/httpparse import HeadScanner, findHeadEnd, parseChunkSize,
   parseCrLf, ParseBad, ParseIncomplete, MaxHeadLen, MaxTrailerCount
-import tsuru/http
-import tsuru/internal/[transport, input, endpoint]
+import tsuru/internal/[http, transport, input, endpoint]
 export http.Header, http.HttpResponse, http.header
 export ioring.Deadline, ioring.never, ioring.afterMs
 
@@ -90,16 +89,18 @@ proc request*(c: HttpClient; dl: Deadline; meth = "GET"; target = "";
   ## Send one complete request and return its final head. Consume the body before
   ## requesting again, or close. HTTP status codes, including errors, are responses.
   ## Failures during the exchange release the connection and raise ErrorCode.
-  ## Invalid request inputs are rejected before I/O, preserving an idle connection.
+  ## Rejected before I/O, preserving an idle connection: invalid request inputs
+  ## (ValueError), an expired dl (TimeoutError), and a request while the
+  ## previous body is unread (BadOperation).
   if c.phase == hpClosed: raise EndOfStreamError
-  if c.phase != hpReady: raise ValueError
+  if c.phase != hpReady: raise BadOperation
   var head = requestHead(c.authority, meth,
     (if target.len == 0: c.target else: target), body.len, headers)
   if body.len <= SmallBody: head.add body
+  checkDeadline(dl)
   c.deadline = dl
   c.received = 0
   try:
-    checkDeadline(dl)
     writeAll(c.transport, toOpenArray(head, 0, head.len - 1), dl)
     if body.len > SmallBody:
       writeAll(c.transport, toOpenArray(body, 0, body.len - 1), dl)

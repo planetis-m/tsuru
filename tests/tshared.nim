@@ -1,7 +1,7 @@
-## Facade and explicit imports share one Header, Deadline and operation set.
+## Both clients export one Header, HttpResponse, header and Deadline, and their
+## operations overload cleanly when imported together.
 import testkit
 import std/ioring
-import tsuru
 import tsuru/websocket
 import tsuru/httpclient
 
@@ -40,4 +40,4 @@ block sharedRecords:
   doAssert message.kind == wmClose and message.code == 1006
   doAssert response.status == 204 and response.header("x") == ""
 
-echo "facade and explicit import tests passed"
+echo "shared type and overload tests passed"

@@ -1,33 +1,14 @@
 ## WebSocket opening request construction and HTTP upgrade validation.
 import std/[strutils, sha1, base64]
 from std/http/httpparse import MaxHeadLen
-from tsuru/http import Header
-import tsuru/internal/[endpoint, head, buffer]
-export Header
-from tsuru/frame import DefaultMaxMessage
+from ./http import Header
+import ./[endpoint, head, buffer]
 
-const MaxHandshake* = MaxHeadLen
-  ## Limit on the upgrade response head.
-
-type
-  WebSocketOptions* = object
-    ## Limits and handshake fields. Construct with initWebSocketOptions.
-    maxMessage*: int
-    timeoutMs*: int
-      ## Per-operation budget, including all fragments/control frames in recv.
-    origin*: string
-    protocols*: seq[string]
-    headers*: seq[Header]
-    caFile*: string
-      ## Optional CA file for TLS; empty uses OpenSSL's system trust paths.
-
-const ReservedHandshakeHeaders = ["host", "connection", "upgrade", "origin",
+const
+  MaxHandshake = MaxHeadLen
+    ## Limit on the upgrade response head.
+  ReservedHandshakeHeaders = ["host", "connection", "upgrade", "origin",
   "content-length", "transfer-encoding"]
-
-proc initWebSocketOptions*(maxMessage: Positive = DefaultMaxMessage;
-                           timeoutMs: Positive = 30_000): WebSocketOptions =
-  ## Default to a 16 MiB message limit and a 30 second operation budget.
-  WebSocketOptions(maxMessage: maxMessage, timeoutMs: timeoutMs)
 
 proc acceptKey*(key: string): string =
   ## Expected Sec-WebSocket-Accept for a client nonce.
@@ -47,25 +28,24 @@ proc reservedHandshakeHeader(name: string): bool =
   for reserved in ReservedHandshakeHeaders:
     if equalsLower(name, reserved): return true
 
-proc validateOptions*(options: WebSocketOptions) {.raises.} =
-  ## Reject invalid limits and fields that could alter the upgrade request.
+proc validateFields(origin: string; protocols: seq[string]; headers: seq[Header]) {.raises.} =
+  ## Reject fields that could alter the upgrade request.
   ## Offered subprotocols must be distinct tokens (RFC 6455 §4.1).
-  if options.maxMessage <= 0 or options.timeoutMs <= 0 or not cleanValue(options.origin):
-    raise ValueError
-  if '\0' in options.caFile: raise ValueError
-  for i in 0..<options.protocols.len:
-    if not validToken(options.protocols[i]): raise ValueError
+  if not cleanValue(origin): raise ValueError
+  for i in 0..<protocols.len:
+    if not validToken(protocols[i]): raise ValueError
     for j in 0..<i:
-      if options.protocols[i] == options.protocols[j]: raise ValueError
-  for h in options.headers:
+      if protocols[i] == protocols[j]: raise ValueError
+  for h in headers:
     if not validToken(h.name) or not cleanValue(h.value) or
         reservedHandshakeHeader(h.name):
       raise ValueError
 
-proc buildRequest*(e: Endpoint; key: string; options: WebSocketOptions): string {.raises.} =
+proc buildRequest*(e: Endpoint; key, origin: string; protocols: seq[string];
+                   headers: seq[Header]): string {.raises.} =
   ## Build the HTTP/1.1 upgrade request. Pass a parseEndpoint result and a base64 nonce.
-  validateOptions(options)
-  result = newStringOfCap(160 + e.target.len + e.authority.len + options.origin.len)
+  validateFields(origin, protocols, headers)
+  result = newStringOfCap(160 + e.target.len + e.authority.len + origin.len)
   result.add "GET "
   result.add e.target
   result.add " HTTP/1.1\r\nHost: "
@@ -74,15 +54,15 @@ proc buildRequest*(e: Endpoint; key: string; options: WebSocketOptions): string 
   result.add "Sec-WebSocket-Key: "
   result.add key
   result.add "\r\n"
-  if options.origin.len > 0:
+  if origin.len > 0:
     result.add "Origin: "
-    result.add options.origin
+    result.add origin
     result.add "\r\n"
-  if options.protocols.len > 0:
+  if protocols.len > 0:
     result.add "Sec-WebSocket-Protocol: "
-    result.add options.protocols.join(", ")
+    result.add protocols.join(", ")
     result.add "\r\n"
-  for h in options.headers:
+  for h in headers:
     result.add h.name
     result.add ": "
     result.add h.value

@@ -1,7 +1,9 @@
 import testkit
 import std/strutils
-import tsuru/[frame, protocol]
+import tsuru/internal/[frame, protocol]
 import wire
+
+const DefaultMaxMessage = 16 * 1024 * 1024
 
 block masking_vector:
   let wire = encodeFrame(opText, "Hello", [0x37'u8, 0xFA'u8, 0x21'u8, 0x3D'u8])
@@ -104,8 +106,8 @@ block header_only:
   doAssert parsed.status == psOk and parsed.consumed == 10
   doAssert h.length == 70000 and not h.fin and h.opcode == opBinary
   doAssert parseFrameHeader(toOpenArray(wire, 0, 9), h, 69999).status == psTooLarge
-  doAssert parseFrameHeader(toOpenArray(wire, 0, 8), h).status == psIncomplete
-  doAssert parseFrameHeader("\x89\x7e\x00\x7e", h).status == psError
+  doAssert parseFrameHeader(toOpenArray(wire, 0, 8), h, 100000).status == psIncomplete
+  doAssert parseFrameHeader("\x89\x7e\x00\x7e", h, 100000).status == psError
 
 block streamed_assembly:
   var s = MessageState()

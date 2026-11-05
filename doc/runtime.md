@@ -20,6 +20,11 @@ The application owns the scheduler lifecycle.
 
 Each connection belongs to one task, with sequential calls. Aliases refer to
 the same connection; concurrent reads, writes or teardown are unsupported.
+In particular, a WebSocket send while another task is parked in `recv` is
+unsupported, with or without TLS: both share the connection's send buffer, and
+OpenSSL forbids concurrent reads and writes on one session. The library adds
+no locks. To send from several tasks, use the pump in
+[WebSocket concurrency](api.md#concurrency).
 The last reference releases the transport. Use `ws.abort()` or `c.close()`
 for deterministic immediate cleanup, including error paths.
 
@@ -29,7 +34,7 @@ copies bytes into caller-owned storage.
 ## Deadlines
 
 Both client modules, `tsuru/websocket` and `tsuru/httpclient`, export
-`Deadline`, `afterMs` and `never`; the `tsuru` facade re-exports both modules.
+`Deadline`, `afterMs` and `never`, so both can be imported together.
 A deadline is an absolute monotonic instant; `afterMs(1000)` creates one a
 second from now. Compute the deadline once to bound several operations together.
 
@@ -52,9 +57,10 @@ also use SNI. System trust paths are the default; set `options.caFile` to use
 a custom PEM trust file. Certificate verification is always enabled.
 
 Orderly closes send a TLS close_notify without waiting for the peer's: a
-completed WebSocket close handshake, and an HTTP connection released between
-exchanges (Connection: close, or `close` after a complete body). Aborts,
-failures and unread responses close the socket only. Each connection creates
+completed WebSocket close handshake, a WebSocket protocol failure after its
+Close frame was written, and an HTTP connection released between exchanges
+(Connection: close, or `close` after a complete body). Aborts, transport
+failures, EOF, timeouts and unread responses close the socket only. Each connection creates
 its own OpenSSL context and loads the trust store again.
 
 Without TLS support, secure URLs raise `UnimplementedOperation` before TCP

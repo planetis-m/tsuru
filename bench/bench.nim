@@ -1,7 +1,7 @@
 ## Loopback throughput benchmark against bench/server.c. One connection, one
 ## task, sequential operations. Usage: bench <port> <mode> <iterations>
 import std/[cmdline, syncio, threadpool, ioring, atomics, parseutils, opt]
-import tsuru
+import tsuru/[websocket, httpclient]
 
 var done: int
 var failed: int

@@ -1,7 +1,7 @@
 # HTTP client
 
-Import `tsuru/httpclient`. The `tsuru` package root is a facade re-exporting
-this module together with `tsuru/websocket`. Each client belongs to one passive
+Import `tsuru/httpclient`; it can be imported together with `tsuru/websocket`,
+which exports the same `Header`, `HttpResponse` and `Deadline`. Each client belongs to one passive
 task and handles one request at a time. Finish the response body before
 requesting again, or close immediately. See [runtime](runtime.md) for
 scheduling, TLS and ownership.
@@ -126,16 +126,18 @@ bounded.
 ## Errors
 
 All failures during an exchange release the connection. Invalid caller inputs
-and requests made before consuming the previous body are rejected before I/O;
+(`ValueError`), an already expired deadline (`TimeoutError`) and a request made
+before consuming the previous body (`BadOperation`) are rejected before I/O;
 the connection remains usable.
 
 | ErrorCode | Typical cause |
 | --- | --- |
-| `TimeoutError` | Setup or exchange deadline expired |
+| `TimeoutError` | Setup or exchange deadline expired, or already expired at request |
 | `EndOfStreamError` | Incomplete response or request on a closed handle |
 | `SyntaxError` | Malformed or ambiguous response framing |
 | `ContentTooLong` | Response payload or head exceeds its limit |
-| `ValueError` | Invalid URL/options/request fields, or an unfinished prior body |
+| `ValueError` | Invalid URL/options/request fields |
+| `BadOperation` | Request while the previous body is unread |
 | `IOError` | Socket or TLS I/O failure, including abrupt TLS shutdown |
 | `PermissionDenied` | TLS negotiation or certificate verification rejected |
 | `NameNotFound` | DNS name not found |
@@ -145,6 +147,5 @@ Redirects are returned for the caller to handle. HTTP/2, CONNECT tunnels,
 protocol upgrades, transfer codings other than chunked, automatic decompression
 and connection pools are unsupported.
 
-`tsuru/http` provides pure head parsing, request serialization and the response
-record types. Response framing follows
+Response framing follows
 [RFC 9112 §6.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-6.3).

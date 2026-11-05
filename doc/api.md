@@ -1,8 +1,8 @@
 # WebSocket client
 
 Import `tsuru/websocket` for the client and `std/opt` to match receive results.
-The `tsuru` package root is a facade re-exporting this module together with
-`tsuru/httpclient`. Use one owning passive task for each connection.
+It can be imported together with `tsuru/httpclient`; both export the same
+`Header` and `Deadline`. Use one owning passive task for each connection.
 See [runtime](runtime.md) for scheduling, TLS and connection ownership.
 
 ## Operations
@@ -14,7 +14,7 @@ See [runtime](runtime.md) for scheduling, TLS and connection ownership.
 | `ws.send(data: seq[byte], dl = never)` | Binary write success as `bool` |
 | `ws.recv(dl = never)` | `Opt[Message]`: complete message, terminal close, or expiry |
 | `ws.ping(data = "", dl = never)` | Ping write success as `bool` |
-| `ws.close(code = 1000, reason = "", dl = never)` | Terminal `Message` after a bounded closing handshake |
+| `ws.close(code = 1000, reason = "", dl = afterMs(1000))` | Terminal `Message` after a bounded closing handshake; discardable |
 | `ws.abort()` | Immediate, idempotent release |
 | `ws.open` | Whether application messages may be sent, as `bool` |
 | `ws.protocol` | Negotiated subprotocol, or `""` |
@@ -60,9 +60,12 @@ Send and ping return false on a closed connection or write failure.
 Write failure releases the connection; the next receive returns its terminal
 outcome.
 
-Callers supply valid UTF-8 for text, ping payloads of at most 125 bytes, and
-valid close codes with a UTF-8 reason of at most 123 bytes. Outgoing payloads
-are not revalidated or restricted by the receive limit.
+Callers supply valid UTF-8 for text messages and close reasons; it is not
+revalidated, and outgoing payloads are not restricted by the receive limit.
+Control frame limits are checked before any I/O: a ping payload over 125 bytes,
+a close code outside 1000–1003, 1007–1014 and 3000–4999, or a close reason over
+123 bytes sends nothing and releases the connection like `abort` (1006,
+`csLocal`). `ping` then returns false, like any failed send.
 
 Sends copy and mask into a reusable wire buffer. Sending a byte sequence avoids
 a sequence-to-string conversion. The client retains its largest send and
@@ -118,9 +121,10 @@ Send and ping expiry are terminal and return false.
 
 Close sends one Close frame, answers pings and waits for the peer's Close.
 Application messages arriving during that wait are discarded. The whole
-handshake is bounded by the earliest of 250 ms from the call, the configured
-operation budget and `dl`. Close always releases and returns the terminal
-message. Abort releases immediately without a handshake.
+handshake is bounded by the earlier of `dl` (one second from the call by
+default) and the configured operation budget. Close always releases and returns
+the terminal message; the result may be discarded. Abort releases immediately
+without a handshake and never suspends, so it suits `defer` and error paths.
 
 ```nim
 let outcome = ws.close(1000, "done", dl = afterMs(100))
@@ -132,7 +136,7 @@ if outcome.closeSource != csPeer:
 | --- | --- |
 | `csPeer` | Peer Close; preserves its code and reason |
 | `csEof` | Transport EOF without a Close frame |
-| `csLocal` | Local abort or a default closed handle |
+| `csLocal` | Local abort, rejected ping or close arguments, or a default closed handle |
 | `csProtocolError` | Malformed peer frame, text or close payload, or exceeded receive limit |
 | `csTransportError` | Socket, TLS or output failure |
 | `csTimeout` | Send, ping or close deadline expired |
@@ -176,28 +180,32 @@ for receive.
 Compression, proxy support, automatic reconnect and background heartbeats are
 unsupported.
 
-## Pure protocol modules
+## Concurrency
 
-| Import | Contents |
-| --- | --- |
-| `tsuru/frame` | Frame header parsing, headers and masking |
-| `tsuru/protocol` | Receive progress, streamed message assembly, UTF-8 and close handling |
-| `tsuru/handshake` | Endpoint parsing, opening request construction and upgrade validation |
+One task owns a connection, and its operations run one at a time. A send from
+another task while the owner is parked in `recv` is unsupported, with or
+without TLS: the two share the connection's send buffer and automatic pong
+state, a failure in one releases the socket under the other, and OpenSSL
+forbids concurrent reads and writes on one session. The client adds no locks.
 
-`parseEndpoint` returns a value with the host, authority, encoded target, port
-and TLS selection fields. `buildRequest` takes that value and a base64 nonce.
+Protocols that send commands from many tasks while events arrive, such as
+WebDriver BiDi, use a single-owner pump ([example](../examples/pump.nim)):
+other tasks queue outgoing messages on a `std/channels` channel, and the owner
+loops over `tryRecv` to send what is queued, then `recv(afterMs(10))`. An
+expired receive keeps the connection and any partial frame, so slicing loses
+nothing. The pump stops on `wmClose`; replies are matched to commands by the
+application. Raise `maxMessage` (for example to 64–256 MiB) for large payloads
+such as screenshots.
 
-`parseFrameHeader` validates a header without needing its payload.
-`feed` is the client's receive step, without I/O: given the unread input and a
-nonnegative message limit, it stores the buffered payload of the current data
-frame, accepts one frame header or handles one complete control frame, and
-reports the bytes it consumed. `akNone` asks for another call and
-`akIncomplete` for more input; a caller may instead append up to `payloadLeft`
-bytes straight to `payload` and report them with `appended`. Other action kinds
-are outcomes. Its parts are public too: `startData` checks a data frame header
-against fragment order and the limit, `finishMessage` validates text and moves
-the message out, and `handleControl` decodes control frames.
-`frameHeader` includes the four-byte mask key. `encodeFrame` returns an owned
-wire string; its `var string` overload reuses storage and accepts character or
-byte views. Input must not alias the output. Supply a fresh cryptographic mask
-and valid outgoing payload for every frame.
+The cost is latency: while no traffic arrives, a queued message waits up to
+the slice length (10 ms), and an idle connection wakes its owner once per
+slice. The pump polls because Nimony's standard library cannot yet wait on a
+socket and a channel at once. A parked passive task has one continuation,
+owned by the operation it waits on; a channel send cannot resume a task parked
+in a socket read, and cancelling the read (`submitPollRemove`) reports a
+cancellation, not an expiry, on the owning thread only. Readiness polling
+(`submitPollAdd`) does not see records OpenSSL has already buffered. An
+event-driven pump needs one of these primitives: a passive wait for the first
+of a channel receive and a ring operation, cancelling the other; or a way for
+another task to expire a pending operation's deadline early, which this client
+would already report as an ordinary `recv` expiry.

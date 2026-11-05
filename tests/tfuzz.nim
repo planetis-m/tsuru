@@ -2,7 +2,7 @@
 ## input, and drive the client's receive path (protocol.feed) with random reads.
 import std/[random, unicode]
 import testkit
-import tsuru/[frame, protocol, handshake, http]
+import tsuru/internal/[frame, protocol, handshake, http]
 import wire
 
 var rng = initRand(6455)

@@ -1,6 +1,6 @@
 ## Test-only unmasked encoder and receive driver. Network fixtures use an
 ## independent Python codec.
-import tsuru/[frame, protocol]
+import tsuru/internal/[frame, protocol]
 import testkit
 
 proc serverFrame*(op: Opcode; data: string; fin = true): string =

@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Public API surface
+
+Only `tsuru/websocket` and `tsuru/httpclient` are public. Both export the
+shared `Header`, `HttpResponse`, `header`, `Deadline`, `afterMs` and `never`.
+
+- Removed: the `tsuru` facade; import `tsuru/httpclient` or `tsuru/websocket`.
+- `WebSocketOptions` and `initWebSocketOptions` are defined in
+  `tsuru/websocket` (unchanged for code that imports it).
+- Moved to `tsuru/internal/` (no compatibility promise): `tsuru/frame`,
+  `tsuru/protocol`, `tsuru/handshake` and `tsuru/http`. Replacements:
+  `Header`, `HttpResponse` and `header` from either client module; the codecs
+  (`encodeFrame`, `parseFrameHeader`, `feed`, `validUtf8`, `parseResponseHead`,
+  `requestHead`, `buildRequest`, `validateResponse`, `acceptKey`,
+  `parseEndpoint`) have no public replacement.
+- Removed exports: `hasToken`, `DefaultMaxMessage` (the default of
+  `initWebSocketOptions` is still 16 MiB) and `MaxHandshake`.
+- Internal: `handshake.validateOptions` is gone; `buildRequest` takes the
+  origin, protocols and headers, and `connectWebSocket` checks limits and
+  `caFile` itself. `parseEndpoint` and its `Endpoint` result are internal.
+
+### Behaviour changes
+
+- WebSocket `close`: the hidden 250 ms cap is gone. The handshake is bounded
+  by `dl`, now defaulting to `afterMs(1000)`, and the operation budget; a
+  longer `dl` waits longer. The result is `{.discardable.}`.
+- WebSocket `ping` with a payload over 125 bytes, and `close` with a code that
+  may not go on the wire (outside 1000–1003, 1007–1014, 3000–4999) or a reason
+  over 123 bytes, send nothing and release the connection like `abort`
+  (1006, `csLocal`); `ping` returns false. They used to send invalid frames.
+- HTTP `request` while a body is unread raises `BadOperation` instead of
+  `ValueError`.
+- HTTP `request` with an already expired deadline raises `TimeoutError` before
+  any I/O and keeps an idle keep-alive connection, as documented. It used to
+  close it.
+- Internal: the unobservable `connClosing` state is gone.
+
+### Documentation
+
+- runtime.md: a WebSocket protocol failure sends a Close frame and TLS
+  close_notify; only aborts, transport failures, EOF and timeouts close the
+  socket alone (the code already did this).
+- Concurrent send during a parked `recv` is unsupported; api.md#concurrency
+  and `examples/pump.nim` document the single-owner pump, its latency
+  trade-off (up to one 10 ms slice) and the stdlib primitive that would make
+  it event-driven.
+
 ### Fixes
 
 - HTTP keep-alive: bytes still buffered after a complete response were parsed

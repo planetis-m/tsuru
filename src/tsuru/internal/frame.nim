@@ -1,8 +1,5 @@
 ## RFC 6455 client framing: parse unmasked server frames and encode masked sends.
 
-const DefaultMaxMessage* = 16 * 1024 * 1024
-  ## Default limit for a frame payload or an assembled message.
-
 type
   Opcode* = enum
     ## RFC 6455 frame opcodes.
@@ -93,11 +90,11 @@ proc encodeFrame*(op: Opcode; data: string; key: array[4, uint8]; fin = true): s
   encodeFrame(result, op, data, key, fin)
 
 proc parseFrameHeader*(data: openArray[char]; h: var FrameHeader;
-                       maxPayload = DefaultMaxMessage): ParseResult =
+                       maxPayload: int): ParseResult =
   ## Parse and validate one server frame header at the front of data without
   ## touching its payload; consumed is the header length. Rejects masking, RSV
   ## bits, unknown opcodes, fragmented or long controls and non-minimal lengths
-  ## (RFC 6455 §5.1, §5.2, §5.5). A nonnegative maxPayload bounds the length
+  ## (RFC 6455 §5.1, §5.2, §5.5). The nonnegative maxPayload bounds the length
   ## before any allocation.
   result = ParseResult(status: psIncomplete)
   if data.len < 2: return

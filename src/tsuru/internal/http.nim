@@ -1,8 +1,7 @@
 ## HTTP/1.x heads and request serialization, independent of I/O.
 import std/strutils
 from std/http/httpparse import MaxHeadLen, MaxHeaderCount
-import tsuru/internal/[head, buffer]
-export head.hasToken
+import ./[head, buffer]
 
 type
   Header* = object

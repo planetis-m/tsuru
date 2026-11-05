@@ -125,6 +125,22 @@ def fixture(sock, mode, wire=None, code=1002, client_done=None):
         sock.sendall(frame(8, data))
         assert sock.recv(1) == b""
         return
+    if mode == "close-slow":
+        handshake(sock)
+        assert read_frame(sock) == (8, struct.pack("!H", 1000) + b"r" * 123)
+        time.sleep(0.4)
+        sock.sendall(frame(8, struct.pack("!H", 1000)))
+        assert sock.recv(1) == b""
+        return
+    if mode == "ping-guard":
+        handshake(sock)
+        assert read_frame(sock) == (9, b"p" * 125)
+        assert sock.recv(1) == b"", "an oversized ping must send nothing and release"
+        return
+    if mode in ("close-guard", "close-reason-guard"):
+        handshake(sock)
+        assert sock.recv(1) == b"", "an invalid close must send nothing and release"
+        return
     if mode == "close-abort":
         handshake(sock)
         assert sock.recv(1) == b""
@@ -342,14 +358,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
     parser.add_argument("--tls", action="store_true")
+    parser.add_argument("--pump", type=Path, help="examples/pump binary, run against the echo fixture")
     args = parser.parse_args()
     binary = args.binary.resolve()
+    if args.pump:
+        run_case(args.pump.resolve(), "echo")
     for mode in ("echo", "drop", "fragments", "empty-close", "eof", "protocols",
                  "bad-upgrade", "handshake-timeout", "read-timeout", "write-timeout",
                  "buffered-timeout", "partial-timeout", "large-partial-timeout", "control-timeout",
                  "control-backpressure",
                  "commands", "large", "reset",
-                 "close-handshake", "close-abort", "close-timeout", "close-eof", "close-protocol-error", "resources"):
+                 "close-handshake", "close-slow", "ping-guard", "close-guard", "close-reason-guard",
+                 "close-abort", "close-timeout", "close-eof", "close-protocol-error", "resources"):
         run_case(binary, mode)
     for wire, code in [(b"\x81\x80", 1002), (frame(1, b"\xff"), 1007),
                        (frame(0, b"orphan"), 1002), (frame(8, b"x"), 1002),
@@ -374,6 +394,10 @@ def main():
             run_case(binary, "echo", tls=context, ca=str(cert), orderly=True)
             run_case(binary, "echo", tls=context, ca=str(cert), hostname="localhost", orderly=True)
             assert server_names[-1] == "localhost", "DNS connections must send SNI"
+            run_case(binary, "close-slow", tls=context, ca=str(cert), orderly=True)
+            # A protocol failure sends a Close frame and then close_notify.
+            run_case(binary, "protocol-error", wire=b"\x81\x80", code=1002, tls=context,
+                     ca=str(cert), orderly=True)
             run_case(binary, "write-timeout", tls=context, ca=str(cert))
             for mode in ("read-timeout", "partial-timeout", "large-partial-timeout",
                          "control-timeout", "large"):

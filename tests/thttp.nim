@@ -1,6 +1,6 @@
 import testkit
 import std/strutils
-import tsuru/http
+import tsuru/internal/[http, head]
 
 proc parse(fields: string; status = "200 OK"; meth = "GET"): ResponseHead {.raises.} =
   parseResponseHead("HTTP/1.1 " & status & "\r\n" & fields & "\r\n", meth)

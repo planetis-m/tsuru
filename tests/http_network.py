@@ -35,12 +35,14 @@ def fixed(peer, body, *, status=200, fields=b"", version=b"1.1"):
 
 
 def fixture(peer, mode):
-    if mode in ("abort", "expired-request", "warmup"):
+    if mode in ("abort", "warmup"):
         assert peer.recv(1) == b""
         return
     line, headers, body = read_request(peer)
     assert line.endswith(" /chat?q=%20 HTTP/1.1")
-    if mode == "large":
+    if mode == "expired-request":
+        fixed(peer, b"hello")
+    elif mode == "large":
         assert line.startswith("POST ") and body == b"x\0\xff" * (7 * 1024 * 1024)
         fixed(peer, body)
     elif mode == "no-body":
@@ -189,7 +191,8 @@ def main():
             context.set_servername_callback(lambda peer, name, ctx: names.append(name))
             run_case(binary, "keepalive", tls=context, ca=str(cert), hostname="localhost")
             assert names[-1] == "localhost"
-            for mode in ("chunked", "chunked-large", "leftover", "large", "slow-head", "slow-body", "truncated"):
+            for mode in ("chunked", "chunked-large", "leftover", "large", "slow-head", "slow-body", "truncated",
+                         "expired-request"):
                 run_case(binary, mode, tls=context, ca=str(cert))
             run_case(binary, "tls-reject", tls=context)
             run_case(binary, "tls-reject", tls=context, ca=str(cert), hostname="wrong.localhost")

@@ -1,6 +1,6 @@
 import testkit
 import std/strutils
-import tsuru/handshake
+import tsuru/internal/[handshake, http]
 
 template rejects(body: untyped) {.untyped.} =
   block:
@@ -58,25 +58,17 @@ proc main() {.raises.} =
       rejects: discard validateResponse(bad, key, @["chat"])
 
   block request:
-    var options = initWebSocketOptions()
-    options.protocols = @["chat"]
-    options.headers = @[Header(name: "Authorization", value: "Bearer example")]
-    let req = buildRequest(parseEndpoint("ws://localhost"), "nonce", options)
-    doAssert req.len > 0
-    options.headers = @[Header(name: "Host", value: "other")]
-    rejects: discard buildRequest(parseEndpoint("ws://localhost"), "nonce", options)
-    options.headers = @[Header(name: "X-Test", value: "x\r\nBad: injected")]
-    rejects: discard buildRequest(parseEndpoint("ws://localhost"), "nonce", options)
-    options.headers = @[Header(name: "sec-WEBSOCKET-key", value: "x")]
-    rejects: discard buildRequest(parseEndpoint("ws://localhost"), "nonce", options)
-    options.headers = @[Header(name: "Cookie", value: repeat("c", 20000))]
-    doAssert buildRequest(parseEndpoint("ws://localhost"), "nonce", options).len > 20000
-    options.headers = @[]
-    options.protocols = @["chat", "chat"]
-    rejects: validateOptions(options)
-    options.protocols = @[]
-    options.caFile = "ca\0.pem"
-    rejects: validateOptions(options)
+    let e = parseEndpoint("ws://localhost")
+    let auth = @[Header(name: "Authorization", value: "Bearer example")]
+    doAssert buildRequest(e, "nonce", "", @["chat"], auth).len > 0
+    rejects: discard buildRequest(e, "nonce", "", @[], @[Header(name: "Host", value: "other")])
+    rejects: discard buildRequest(e, "nonce", "", @[],
+      @[Header(name: "X-Test", value: "x\r\nBad: injected")])
+    rejects: discard buildRequest(e, "nonce", "", @[], @[Header(name: "sec-WEBSOCKET-key", value: "x")])
+    doAssert buildRequest(e, "nonce", "", @[],
+      @[Header(name: "Cookie", value: repeat("c", 20000))]).len > 20000
+    rejects: discard buildRequest(e, "nonce", "", @["chat", "chat"], @[])
+    rejects: discard buildRequest(e, "nonce", "x\ny", @[], @[])
 
   echo "handshake tests passed"
 

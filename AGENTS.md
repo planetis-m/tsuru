@@ -18,13 +18,12 @@ inherit that instant and may tighten it, never renew it.
 
 | Module | Responsibility |
 | --- | --- |
-| `tsuru` | Public facade re-exporting both clients |
-| `tsuru/websocket` | WebSocket connection state and passive operations |
-| `tsuru/frame` | Wire codec and masking |
-| `tsuru/protocol` | Receive progress, message assembly, UTF-8 and close decisions |
-| `tsuru/handshake` | Opening requests and HTTP upgrade validation |
-| `tsuru/http` | Pure HTTP heads and request serialization |
-| `tsuru/httpclient` | Request deadlines, keep-alive and body sequencing |
+| `tsuru/websocket` | Public: WebSocket options, connection state and passive operations |
+| `tsuru/httpclient` | Public: request deadlines, keep-alive and body sequencing |
+| `tsuru/internal/frame` | Wire codec and masking |
+| `tsuru/internal/protocol` | Receive progress, message assembly, UTF-8 and close decisions |
+| `tsuru/internal/handshake` | Opening requests and HTTP upgrade validation |
+| `tsuru/internal/http` | Shared `Header`/`HttpResponse`, pure HTTP heads and request serialization |
 | `tsuru/internal/endpoint` | Shared URL parsing |
 | `tsuru/internal/head` | One-pass response head tokenizer for HTTP and the upgrade |
 | `tsuru/internal/net`, `tsuru/internal/tls` | Socket and OpenSSL declarations |
@@ -32,15 +31,18 @@ inherit that instant and may tighten it, never renew it.
 | `tsuru/internal/buffer` | Bulk string operations |
 | `tsuru/internal/input` | Read-ahead input shared by both clients |
 
-Import `tsuru/websocket` or `tsuru/httpclient` explicitly; `import tsuru` is a
-facade that only re-exports both clients and their shared types.
+Only `tsuru/websocket` and `tsuru/httpclient` are public; both re-export the
+shared `Header`, `HttpResponse`, `header` and `Deadline`. Everything under
+`internal/` may change freely; tests import it directly.
 Keep pure protocol decisions independent of socket operations. Source comments
 describe current contracts and invariants.
 
 ## Ownership and I/O
 
 Each connection belongs to one task. Do not introduce concurrent access to an
-OpenSSL session or bypass certificate verification. The transport is move-only;
+OpenSSL session or bypass certificate verification. Concurrent send during a
+parked recv is unsupported; the documented pattern is the single-owner pump in
+`examples/pump.nim`. Do not add locks. The transport is move-only;
 public connections are reference handles. Custom ownership hooks belong only
 on resources the compiler cannot release.
 
@@ -60,8 +62,8 @@ responses. Every outgoing WebSocket frame needs a fresh random mask.
 Preserve one absolute deadline across fragments, controls and partial writes.
 Keep pending control bytes and their cursor intact across receive expiry;
 finish them before encoding another frame. Application write failure releases
-the connection. WebSocket close discards messages while awaiting the peer under
-its 250 ms cap; abort releases immediately.
+the connection. WebSocket close discards messages while awaiting the peer until
+its deadline (one second by default); abort releases immediately.
 
 Keep connection state private and retained-memory costs explicit in API docs.
 

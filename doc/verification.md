@@ -23,14 +23,13 @@ Linux x86-64, Nimony 0.6.3, GCC, Python 3.14 and OpenSSL.
 
 | Configuration | Result |
 | --- | --- |
-| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 78 network fixtures passed |
-| Release, plain | Unit/fuzz, 59 network fixtures and setup-expiry/unsupported-TLS checks passed |
-| Danger, TLS | Unit/fuzz and 78 network fixtures passed |
+| Debug, TLS, AddressSanitizer + UndefinedBehaviorSanitizer | Unit/fuzz and 88 network fixtures passed |
+| Release, plain | Unit/fuzz, 65 network fixtures and setup-expiry/unsupported-TLS checks passed |
+| Danger, TLS | Unit/fuzz and 88 network fixtures passed |
 
 The wire fixtures use independent Python encoders and decoders. Unit tests
-cover pure codecs and HTTP heads. A facade test imports both clients together
-with `tsuru` and checks shared header and deadline identities plus overloaded
-operations. A seeded test supplies 220,000 deterministic inputs per run: random
+cover pure codecs and HTTP heads. A shared-type test imports both clients together
+and checks shared header and deadline identities plus overloaded operations. A seeded test supplies 220,000 deterministic inputs per run: random
 bytes for the frame, UTF-8, URL, HTTP head and WebSocket upgrade parsers,
 mutated valid heads, and mostly-ASCII text whose UTF-8 verdict must match
 `std/unicode.validateUtf8` at every alignment. The client's receive step
@@ -42,9 +41,11 @@ Test assertions and peer-protocol checks remain active in danger builds.
 
 ## WebSocket coverage
 
-The WebSocket runner has 34 TCP fixtures and ten additional TLS fixtures.
-It imports the `tsuru` facade, while the HTTP runner and the examples use
-explicit `tsuru/websocket` and `tsuru/httpclient` imports.
+The WebSocket runner has 39 TCP fixtures (including the pump example) and 12 additional TLS fixtures.
+The runners and examples import `tsuru/websocket` and `tsuru/httpclient`;
+unit tests import the internal codecs directly. The WebSocket runner also runs
+`examples/pump` against the echo fixture: four tasks queue 100 messages that
+one owning task sends between 10 ms receive slices.
 Coverage includes empty and extended-length payloads, binary sequences, masking,
 fragmented UTF-8, bytewise delivery, subprotocols, custom headers, malformed
 frames/text, message limits, close outcomes, DNS and IPv6 literals.
@@ -60,6 +61,8 @@ frames/text, message limits, close outcomes, DNS and IPv6 literals.
 | Replies, events and late replies share one stream | `commands`: 33 active ids, one retired id and reverse-order replies |
 | Large payloads work in both directions | `large`: 20 MiB text round trip |
 | Teardown is bounded | `close-timeout`: 100 ms deadline, measured under 500 ms |
+| Close waits up to its deadline (one second by default) | `close-slow`: peer replies after 400 ms, after a second idle |
+| Invalid ping and close arguments send nothing and release | `ping-guard`, `close-guard`, `close-reason-guard` |
 | Terminal paths release descriptors | `resources`: 15 connections with stable descriptor counts |
 
 Other closing fixtures check interleaved messages and pings, peer code/reason,
@@ -67,12 +70,13 @@ EOF, protocol failure, immediate abort and absence of duplicate Close frames.
 Resource paths include rejected upgrades, resets and setup expiry.
 
 TLS fixtures cover trusted IP/DNS certificates, SNI, untrusted and wrong-host
-rejection, stalled writes, receive expiry, fragment resumption, controls and
-large payloads. Plain builds also check secure-URL rejection before TCP setup.
+rejection, stalled writes, receive expiry, fragment resumption, controls,
+large payloads, a slow close, and a protocol failure that must send its Close
+frame and then close_notify. Plain builds also check secure-URL rejection before TCP setup.
 
 ## HTTP coverage
 
-The HTTP runner has 26 TCP fixtures and ten additional TLS fixtures.
+The HTTP runner has 26 TCP fixtures and 11 additional TLS fixtures.
 
 | Area | Coverage |
 | --- | --- |

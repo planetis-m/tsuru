@@ -1,6 +1,6 @@
 ## Network test driver. The Python runner supplies independent wire fixtures.
 import std/[cmdline, syncio, threadpool, ioring, atomics, strutils, parseutils, opt]
-import tsuru
+import tsuru/websocket
 import testkit
 import fdcount
 
@@ -27,7 +27,8 @@ proc resourceLoop(url: string) {.passive, raises.} =
         let ws = connectWebSocket(url, dl = afterMs(if mode == "setup-timeout": 25 else: 2000))
         defer: ws.abort()
         if mode == "abort": ws.abort()
-        elif mode == "close-timeout": doAssert ws.close(1000, "done").closeSource == csTimeout
+        elif mode == "close-timeout":
+          doAssert ws.close(1000, "done", dl = afterMs(100)).closeSource == csTimeout
         elif mode == "reset":
           doAssert ws.send("reset")
           doAssert ws.receive().closeSource == csTransportError
@@ -214,6 +215,7 @@ proc main(url, mode, caFile: string) {.passive.} =
         doAssert m.closeSource == csPeer
         doAssert not ws.open
         doAssert ws.close(1001, "again").closeSource == csPeer
+        ws.close() # discardable; repeats the recorded outcome
         doAssert not ws.send("closed")
         doAssert not ws.send(newSeq[byte](0))
         doAssert not ws.ping()
@@ -222,6 +224,24 @@ proc main(url, mode, caFile: string) {.passive.} =
         doAssert not ws.open
         ws.abort()
         doAssert ws.receive().code == 1001
+      elif mode == "close-slow":
+        # The default close deadline is one second from the call; a 400 ms
+        # reply is awaited even after the connection has idled past a second.
+        doAssert ws.recv(dl = afterMs(1100)).isNone
+        let started = monoNow()
+        let m = ws.close(1000, repeat("r", 123))
+        doAssert m.closeSource == csPeer and m.code == 1000
+        doAssert int64(monoNow()) - int64(started) >= 300_000_000
+      elif mode == "ping-guard":
+        doAssert ws.ping(repeat("p", 125))
+        doAssert not ws.ping(repeat("p", 126))
+        doAssert not ws.open
+        let m = ws.receive()
+        doAssert m.code == 1006 and m.closeSource == csLocal
+      elif mode in ["close-guard", "close-reason-guard"]:
+        let m = if mode == "close-guard": ws.close(1005) else: ws.close(1000, repeat("r", 124))
+        doAssert m.kind == wmClose and m.code == 1006 and m.closeSource == csLocal
+        doAssert not ws.open and ws.receive().closeSource == csLocal
       elif mode == "close-abort":
         ws.abort()
         let m = ws.receive()
