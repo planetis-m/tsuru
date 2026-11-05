@@ -1,12 +1,13 @@
 ## WebSocket opening request construction and HTTP upgrade validation.
 import std/[strutils, sha1, base64]
 from std/http/httpparse import MaxHeadLen
-from tsuru/http import Header, validToken, cleanValue, hasToken
-import tsuru/internal/endpoint
+from tsuru/http import Header, validToken, cleanValue
+import tsuru/internal/[endpoint, head]
 export Header, endpoint.Endpoint
 from tsuru/frame import DefaultMaxMessage
 
 const MaxHandshake* = MaxHeadLen
+  ## Limit on the upgrade response head.
 
 type
   WebSocketOptions* = object
@@ -19,6 +20,9 @@ type
     headers*: seq[Header]
     caFile*: string
       ## Optional CA file for TLS; empty uses OpenSSL's system trust paths.
+
+const ReservedHandshakeHeaders = ["host", "connection", "upgrade", "origin",
+  "content-length", "transfer-encoding"]
 
 proc initWebSocketOptions*(maxMessage: Positive = DefaultMaxMessage;
                            timeoutMs: Positive = 30_000): WebSocketOptions =
@@ -36,8 +40,16 @@ proc parseEndpoint*(url: string): Endpoint {.raises.} =
   ## Parse ws/wss URLs, preserving the encoded request target.
   endpoint.parseEndpoint(url, "ws", "wss")
 
+proc reservedHandshakeHeader(name: string): bool =
+  if name.len >= 14 and sameIgnoreCase(toOpenArray(name, 0, 13), "sec-websocket-"):
+    return true
+  result = false
+  for reserved in ReservedHandshakeHeaders:
+    if name.cmpIgnoreCase(reserved) == 0: return true
+
 proc validateOptions*(options: WebSocketOptions) {.raises.} =
   ## Reject invalid limits and fields that could alter the upgrade request.
+  ## Offered subprotocols must be distinct tokens (RFC 6455 §4.1).
   if options.maxMessage <= 0 or options.timeoutMs <= 0 or not cleanValue(options.origin):
     raise ValueError
   if '\0' in options.caFile: raise ValueError
@@ -46,61 +58,77 @@ proc validateOptions*(options: WebSocketOptions) {.raises.} =
     for j in 0..<i:
       if options.protocols[i] == options.protocols[j]: raise ValueError
   for h in options.headers:
-    if not validToken(h.name) or not cleanValue(h.value): raise ValueError
-    let name = h.name.toLowerAscii()
-    if name in ["host", "connection", "upgrade", "origin", "content-length",
-        "transfer-encoding"] or name.startsWith("sec-websocket-"):
+    if not validToken(h.name) or not cleanValue(h.value) or
+        reservedHandshakeHeader(h.name):
       raise ValueError
 
 proc buildRequest*(e: Endpoint; key: string; options: WebSocketOptions): string {.raises.} =
-  ## Build a bounded HTTP/1.1 request. Pass a parseEndpoint result and a base64 nonce.
+  ## Build the HTTP/1.1 upgrade request. Pass a parseEndpoint result and a base64 nonce.
   validateOptions(options)
-  result = "GET " & e.target & " HTTP/1.1\r\nHost: " & e.authority &
-    "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" &
-    "Sec-WebSocket-Key: " & key & "\r\n"
-  if options.origin.len > 0: result.add "Origin: " & options.origin & "\r\n"
-  if options.protocols.len > 0:
-    result.add "Sec-WebSocket-Protocol: " & options.protocols.join(", ") & "\r\n"
-  for h in options.headers: result.add h.name & ": " & h.value & "\r\n"
+  result = newStringOfCap(160 + e.target.len + e.authority.len + options.origin.len)
+  result.add "GET "
+  result.add e.target
+  result.add " HTTP/1.1\r\nHost: "
+  result.add e.authority
+  result.add "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+  result.add "Sec-WebSocket-Key: "
+  result.add key
   result.add "\r\n"
-  if result.len > MaxHandshake: raise ContentTooLong
+  if options.origin.len > 0:
+    result.add "Origin: "
+    result.add options.origin
+    result.add "\r\n"
+  if options.protocols.len > 0:
+    result.add "Sec-WebSocket-Protocol: "
+    result.add options.protocols.join(", ")
+    result.add "\r\n"
+  for h in options.headers:
+    result.add h.name
+    result.add ": "
+    result.add h.value
+    result.add "\r\n"
+  result.add "\r\n"
 
-proc validateResponse*(head, key: string; offered: seq[string]): string {.raises.} =
-  ## Require 101, upgrade tokens, the exact accept key, and an offered subprotocol.
-  ## Returns the negotiated subprotocol, or empty. Extensions are unsupported.
-  if head.len > MaxHandshake or not head.endsWith("\r\n\r\n"): raise ValueError
-  let lines = head.split("\r\n")
-  if lines.len < 4: raise ValueError
-  let status = lines[0]
-  if status.len < 13 or status[0..<13] != "HTTP/1.1 101 ": raise ValueError
-  if not cleanValue(status): raise ValueError
-  var upgrade = ""
-  var connection = ""
-  var accept = ""
-  var protocol = ""
-  var seenAccept = false
+proc validateResponse*(head: openArray[char]; key: string; offered: seq[string]): string
+    {.raises.} =
+  ## Require 101, upgrade tokens, the exact accept key, and an offered subprotocol
+  ## (RFC 6455 §4.1). Returns the negotiated subprotocol, or empty. Extensions are
+  ## unsupported. The head is tokenized once by the shared HTTP scanner.
+  if head.len > MaxHandshake: raise ValueError
+  var status = 0
+  var minor = 0
+  var pos = parseStatusLine(head, status, minor)
+  if pos < 0 or status != 101 or minor != 1: raise ValueError
+  var upgrade = false
+  var connection = false
+  var accept = false
   var seenProtocol = false
-  for i in 1..<lines.len - 2:
-    let line = lines[i]
-    let colon = line.find(':')
-    if colon <= 0: raise ValueError
-    let name = line[0..<colon]
-    let value = line[colon + 1..^1].strip(chars = {' ', '\t'})
-    if not validToken(name) or not cleanValue(value): raise ValueError
-    case name.toLowerAscii()
-    of "upgrade": upgrade.add "," & value
-    of "connection": connection.add "," & value
-    of "sec-websocket-accept":
-      if seenAccept: raise ValueError
-      seenAccept = true
-      accept = value
-    of "sec-websocket-protocol":
-      if seenProtocol or not validToken(value): raise ValueError
+  result = ""
+  let expected = acceptKey(key)
+  while true:
+    let blank = parseHeadEnd(toOpenArray(head, pos, head.len - 1))
+    if blank >= 0:
+      pos += blank
+      break
+    var f = Field()
+    let n = parseField(toOpenArray(head, pos, head.len - 1), f)
+    if n < 0: raise ValueError
+    let name = toOpenArray(head, pos, pos + f.nameLen - 1)
+    let value = toOpenArray(head, pos + f.valueStart, pos + f.valueStart + f.valueLen - 1)
+    if equalsLower(name, "upgrade"):
+      upgrade = upgrade or hasToken(value, "websocket")
+    elif equalsLower(name, "connection"):
+      connection = connection or hasToken(value, "upgrade")
+    elif equalsLower(name, "sec-websocket-accept"):
+      if accept: raise ValueError
+      accept = true
+      if not equals(value, expected): raise ValueError
+    elif equalsLower(name, "sec-websocket-protocol"):
+      if seenProtocol: raise ValueError
       seenProtocol = true
-      protocol = value
-    of "sec-websocket-extensions": raise ValueError
-    else: discard
-  if not hasToken(upgrade, "websocket") or not hasToken(connection, "upgrade") or
-      accept != acceptKey(key): raise ValueError
-  if seenProtocol and protocol notin offered: raise ValueError
-  result = protocol
+      result = copyBytes(value)
+    elif equalsLower(name, "sec-websocket-extensions"):
+      raise ValueError
+    pos += n
+  if pos != head.len or not upgrade or not connection or not accept: raise ValueError
+  if seenProtocol and result notin offered: raise ValueError

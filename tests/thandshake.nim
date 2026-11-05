@@ -1,4 +1,5 @@
 import testkit
+import std/strutils
 import tsuru/handshake
 
 template rejects(body: untyped) {.untyped.} =
@@ -35,6 +36,26 @@ proc main() {.raises.} =
     rejects: discard validateResponse(head & "Sec-WebSocket-Protocol: chat\r\n\r\n", key, @[])
     rejects: discard validateResponse(head & "Sec-WebSocket-Extensions: x\r\n\r\n", key, @[])
     rejects: discard validateResponse("HTTP/1.1 200 OK\r\n\r\n", key, @[])
+    # The reason phrase is optional and bare LF line ends are accepted.
+    let bare = "HTTP/1.1 101\nUpgrade: websocket\nConnection: upgrade\n" &
+      "Sec-WebSocket-Accept: " & acceptKey(key) & "\n\n"
+    doAssert validateResponse(bare, key, @[]) == ""
+    let accept = acceptKey(key)
+    var lowered = accept
+    for i in 0..<lowered.len:
+      if lowered[i] in {'A'..'Z'}: lowered[i] = char(ord(lowered[i]) + 32)
+    for bad in [
+        "HTTP/1.0 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" &
+          "Sec-WebSocket-Accept: " & accept & "\r\n\r\n",
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n" &
+          "Sec-WebSocket-Accept: " & accept & "\r\n\r\n",
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n" &
+          "Sec-WebSocket-Accept: " & accept & "\r\n\r\n",
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" &
+          "Sec-WebSocket-Accept: " & lowered & "\r\n\r\n",
+        head & "Bad Field: x\r\n\r\n", head & "X: a\x01b\r\n\r\n",
+        head & "Sec-WebSocket-Protocol: chat\r\nSec-WebSocket-Protocol: chat\r\n\r\n"]:
+      rejects: discard validateResponse(bad, key, @["chat"])
 
   block request:
     var options = initWebSocketOptions()
@@ -46,7 +67,14 @@ proc main() {.raises.} =
     rejects: discard buildRequest(parseEndpoint("ws://localhost"), "nonce", options)
     options.headers = @[Header(name: "X-Test", value: "x\r\nBad: injected")]
     rejects: discard buildRequest(parseEndpoint("ws://localhost"), "nonce", options)
+    options.headers = @[Header(name: "sec-WEBSOCKET-key", value: "x")]
+    rejects: discard buildRequest(parseEndpoint("ws://localhost"), "nonce", options)
+    options.headers = @[Header(name: "Cookie", value: repeat("c", 20000))]
+    doAssert buildRequest(parseEndpoint("ws://localhost"), "nonce", options).len > 20000
     options.headers = @[]
+    options.protocols = @["chat", "chat"]
+    rejects: validateOptions(options)
+    options.protocols = @[]
     options.caFile = "ca\0.pem"
     rejects: validateOptions(options)
 
