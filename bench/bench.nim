@@ -25,7 +25,7 @@ proc httpLoop(port, path: string; iterations: int; stream: bool): int {.passive,
 proc wsLoop(port, path: string; size, iterations: int): int {.passive, raises.} =
   result = 0
   var options = initWebSocketOptions(maxMessage = 64 * 1024 * 1024)
-  let ws = connectWebSocket("ws://127.0.0.1:" & port & path, options)
+  let ws = connectWebSocket("ws://127.0.0.1:" & port & path, never, options)
   defer: ws.abort()
   var payload = ""
   let p = beginStore(payload, size)
