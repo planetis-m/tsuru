@@ -14,7 +14,7 @@ See [runtime](runtime.md) for scheduling, TLS and connection ownership.
 | `ws.send(data: seq[byte], dl = never)` | Binary write success as `bool` |
 | `ws.recv(dl = never)` | `Opt[Message]`: complete message, terminal close, or expiry |
 | `ws.ping(data = "", dl = never)` | Ping write success as `bool` |
-| `ws.close(code = 1000, reason = "", dl = afterMs(1000))` | Terminal `Message` after a bounded closing handshake; discardable |
+| `ws.close(code = 1000, reason = "", dl = afterMs(1000))` | Terminal `Message` after a bounded closing handshake |
 | `ws.abort()` | Immediate, idempotent release |
 | `ws.open` | Whether application messages may be sent, as `bool` |
 | `ws.protocol` | Negotiated subprotocol, or `""` |

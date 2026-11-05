@@ -225,7 +225,7 @@ proc main(url, mode, caFile: string) {.passive.} =
         doAssert m.closeSource == csPeer
         doAssert not ws.open
         doAssert ws.close(1001, "again").closeSource == csPeer
-        ws.close() # discardable; repeats the recorded outcome
+        doAssert ws.close().closeSource == csPeer # repeats the recorded outcome
         doAssert not ws.send("closed")
         doAssert not ws.send(newSeq[byte](0))
         doAssert not ws.ping()

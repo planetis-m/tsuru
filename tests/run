@@ -16,20 +16,23 @@ for arg in "$@"; do
     *) echo "Usage: tests/run [--release|--danger] [--tls] [--asan] [--network]" >&2; exit 2 ;;
   esac
 done
+cache="nimcache/$cacheTag"
+build="build/$cacheTag"
+mkdir -p "$build"
 for test in tests/t*.nim; do
   if [[ "$test" != tests/testkit.nim ]]; then
-    "$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -r "$test"
+    "$compiler" c --nimcache:"$cache" "${flags[@]}" -o:"$build/$(basename "$test" .nim)" -r "$test"
   fi
 done
-"$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:build/client tests/client.nim
-"$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:build/http-client tests/http_client.nim
+"$compiler" c --nimcache:"$cache" "${flags[@]}" -o:"$build/client" tests/client.nim
+"$compiler" c --nimcache:"$cache" "${flags[@]}" -o:"$build/http-client" tests/http_client.nim
 for example in examples/*.nim; do
-  "$compiler" c --nimcache:"nimcache/$cacheTag" "${flags[@]}" -o:"build/$(basename "$example" .nim)" "$example"
+  "$compiler" c --nimcache:"$cache" "${flags[@]}" -o:"$build/$(basename "$example" .nim)" "$example"
 done
 if [[ "$network" == 1 ]]; then
   extra=()
   if [[ "$tls" == 1 ]]; then extra+=(--tls); fi
-  python3 tests/network.py build/client --pump build/pump "${extra[@]}"
-  python3 tests/http_network.py build/http-client "${extra[@]}"
+  python3 tests/network.py "$build/client" --pump "$build/pump" "${extra[@]}"
+  python3 tests/http_network.py "$build/http-client" "${extra[@]}"
 fi
 echo 'All requested checks passed.'

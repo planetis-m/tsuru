@@ -255,7 +255,7 @@ proc recv*(ws: WebSocket; dl = never): Opt[Message] {.passive.} =
   result = receive(ws, budget(ws, dl), false)
 
 proc close*(ws: WebSocket; code = 1000; reason = ""; dl = afterMs(1000)): Message
-    {.passive, raises, discardable.} =
+    {.passive, raises.} =
   ## Send Close and await the peer's Close within dl and the operation budget.
   ## Always release and return the terminal outcome; csPeer means a peer Close arrived.
   ## Return the recorded outcome if already closed.

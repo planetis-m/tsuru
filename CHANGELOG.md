@@ -26,7 +26,12 @@ shared `Header`, `HttpResponse`, `header`, `Deadline`, `afterMs` and `never`.
 
 - WebSocket `close`: the hidden 250 ms cap is gone. The handshake is bounded
   by `dl`, now defaulting to `afterMs(1000)`, and the operation budget; a
-  longer `dl` waits longer. The result is `{.discardable.}`.
+  longer `dl` waits longer.
+- WebSocket `close` is no longer `{.discardable.}`: use the result or write
+  `discard ws.close()`. Reason: the current Nimony compiler silently drops a
+  discardable call that is the last statement of an `if`/`elif` branch, so
+  `elif cond: ws.close()` never closed. It may return once the compiler fix
+  lands.
 - WebSocket `ping` with a payload over 125 bytes, and `close` with a code that
   may not go on the wire (outside 1000–1003, 1007–1014, 3000–4999) or a reason
   over 123 bytes, raise `BadOperation`, send nothing and leave the connection
