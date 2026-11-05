@@ -77,6 +77,11 @@ def fixture(peer, mode):
         second, _, _ = read_request(peer)
         assert second == "GET /chat?q=%20 HTTP/1.1"
         fixed(peer, body[:70000])
+    elif mode == "leftover":
+        # Bytes after a complete body, in the same write, must never be read as
+        # the next response.
+        peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+                     b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nforged")
     elif mode == "eof":
         peer.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nbye")
         peer.shutdown(socket.SHUT_WR)
@@ -160,7 +165,7 @@ def main():
     parser.add_argument("--tls", action="store_true")
     args = parser.parse_args()
     binary = args.binary.resolve()
-    for mode in ("keepalive", "chunked", "chunked-large", "http10", "unread-body", "no-body", "eof", "large",
+    for mode in ("keepalive", "chunked", "chunked-large", "http10", "unread-body", "no-body", "leftover", "eof", "large",
                  "slow-head", "slow-body", "truncated", "malformed", "bad-chunk", "bad-chunk-end", "trailer-limit",
                  "too-large", "chunk-limit", "eof-limit", "huge-head", "upgrade", "abort", "expired-request", "resources"):
         run_case(binary, mode)
@@ -179,7 +184,7 @@ def main():
             context.set_servername_callback(lambda peer, name, ctx: names.append(name))
             run_case(binary, "keepalive", tls=context, ca=str(cert), hostname="localhost")
             assert names[-1] == "localhost"
-            for mode in ("chunked", "chunked-large", "large", "slow-head", "slow-body", "truncated"):
+            for mode in ("chunked", "chunked-large", "leftover", "large", "slow-head", "slow-body", "truncated"):
                 run_case(binary, mode, tls=context, ca=str(cert))
             run_case(binary, "tls-reject", tls=context)
             run_case(binary, "tls-reject", tls=context, ca=str(cert), hostname="wrong.localhost")

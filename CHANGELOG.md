@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixes
+
+- HTTP keep-alive: bytes still buffered after a complete response were parsed
+  as the next response. The connection is now released instead of reused
+  (`leftover` fixture).
+
 ### API cleanup
 
 - `connectWebSocket(url, dl = never, options = initWebSocketOptions())` takes

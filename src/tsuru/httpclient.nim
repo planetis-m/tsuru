@@ -78,8 +78,10 @@ proc readHead(c: HttpClient; meth: string; dl: Deadline): ResponseHead {.passive
     needMore(c, dl)
 
 proc finishBody(c: HttpClient) =
-  if c.keepAlive: c.phase = hpReady
-  else: close(c)
+  ## Keep the connection only if the server allows it and sent nothing beyond
+  ## this response: unrequested bytes must not be read as the next response.
+  c.phase = hpReady
+  if not c.keepAlive or buffered(c.input) > 0: close(c)
 
 proc request*(c: HttpClient; dl: Deadline; meth = "GET"; target = "";
               body = ""; headers: seq[Header] = @[]): HttpResponse {.passive, raises.} =

@@ -103,7 +103,9 @@ are rejected.
 ## Keep-alive and retries
 
 HTTP/1.1 connections can be reused after a complete body; HTTP/1.0 requires
-keep-alive. Connection: close and EOF bodies release on completion.
+keep-alive. Connection: close and EOF bodies release on completion, and so does
+a response followed by bytes the client did not request: they are never parsed
+as the next response.
 
 A server may close an idle connection between requests. A failed exchange
 releases the connection and raises. Requests are not retried automatically.

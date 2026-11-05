@@ -72,13 +72,13 @@ large payloads. Plain builds also check secure-URL rejection before TCP setup.
 
 ## HTTP coverage
 
-The HTTP runner has 25 TCP fixtures and nine additional TLS fixtures.
+The HTTP runner has 26 TCP fixtures and ten additional TLS fixtures.
 
 | Area | Coverage |
 | --- | --- |
 | Heads | Informational responses, duplicate fields, HEAD/204/304 and oversized heads |
 | Bodies | Content-Length, EOF, bytewise chunks, extensions, discarded trailers (including obs-fold), chunks larger than the read buffer, and truncated messages |
-| Reuse | HTTP/1.1 keep-alive, HTTP/1.0 persistence and rejection of an unread prior body |
+| Reuse | HTTP/1.1 keep-alive, HTTP/1.0 persistence, rejection of an unread prior body and no reuse after unrequested bytes |
 | Limits | Fixed, chunked and EOF body limits; malformed chunk sizes and chunk terminators; trailer count |
 | Deadlines | Head/body expiry, expired requests and preservation of the original body deadline |
 | Large payloads | 21 MiB binary request/response round trip |

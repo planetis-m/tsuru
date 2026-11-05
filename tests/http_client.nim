@@ -20,6 +20,7 @@ proc exercise(url, mode, caFile: string) {.passive, raises.} =
     expected = if url.startsWith("https://"): IOError else: EndOfStreamError
   elif mode in ["too-large", "chunk-limit", "eof-limit", "huge-head", "trailer-limit"]: expected = ContentTooLong
   elif mode == "upgrade": expected = UnimplementedOperation
+  elif mode == "leftover": expected = EndOfStreamError
   var caught = Success
   try:
     if mode == "abort":
@@ -78,6 +79,11 @@ proc exercise(url, mode, caFile: string) {.passive, raises.} =
       let second = c.request(afterMs(2000), meth = "POST", target = "/second", body = "payload")
       doAssert second.status == 201 and c.readAll() == "second"
       doAssert not c.open
+    elif mode == "leftover":
+      doAssert c.request(afterMs(2000)).status == 200
+      doAssert c.readAll() == "hello"
+      doAssert not c.open, "unrequested bytes after a response must end reuse"
+      discard c.request(afterMs(2000))
     elif mode == "slow-body":
       let deadline = afterMs(100)
       discard c.request(deadline)
